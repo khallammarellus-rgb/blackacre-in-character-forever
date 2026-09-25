@@ -1,16 +1,15 @@
-## Interface: 120007, 16001
+## Interface: 16001
 ## Interface-Camelot: 16001
-## Title: Blackacre
-## Notes: Core — Ace3 skeleton, comms, lifecycle, theme (enable Presence, Tome, Survival). Formerly In Character. Retail + WoW Forever.
+## Title: Blackacre: In Character Forever
+## Notes: Core — Ace3 skeleton, comms, lifecycle, theme (enable Presence, Tome, Survival). WoW Forever fork of Blackacre: In Character.
 ## Version: 2.0.0-dev
 ## Author: khallammarellus-rgb
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## SavedVariables: BlackacreDB, InCharacterDB, BlackacreAceDB, BlackacreProfiles
 ## SavedVariablesPerCharacter: BlackacreCharDB, InCharacterCharDB
 ## LoadSavedVariablesFirst: 1
-## OptionalDeps: totalRP3
 ## Category-enUS: Roleplay
-## X-Website: https://github.com/khallammarellus-rgb/Blackacre
+## X-Website: https://github.com/khallammarellus-rgb/blackacre-in-character-forever
 ## X-Curse-Project-ID: 0
 
 embeds.xml

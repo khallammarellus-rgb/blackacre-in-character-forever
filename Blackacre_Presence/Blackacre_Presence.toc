@@ -1,4 +1,4 @@
-## Interface: 120007, 16001
+## Interface: 16001
 ## Interface-Camelot: 16001
 ## Title: Blackacre |cffc9a227Presence|r
 ## Notes: Beacons (crumbs on hidden Blackacre channel) and inn bulletins

@@ -1,10 +1,14 @@
-# Blackacre
+# Blackacre: In Character Forever
+
+This is the **WoW Forever fork** of [Blackacre: In Character](https://github.com/khallammarellus-rgb/blackacre-in-character) (the Retail repo). It forked from Retail at commit `e7a5370` and diverges from that point forward — Forever doesn't have everything Retail has (no deep quest/canon reference yet), so the two codebases are developed separately now instead of sharing one repo behind a flavor flag. See [`docs/RETAIL-VS-FOREVER.md`](docs/RETAIL-VS-FOREVER.md) for why, and [`BUILD_LOG.md`](BUILD_LOG.md) for the fork point.
 
 A WoW addon for in-character immersive connections.
 
-**Version:** 2.0.0-dev (renamed from In Character · Blackacre identity)  
-**Target:** Retail WoW 12.0.7+ (`120007`) and WoW Forever beta (`16001` / Camelot)  
-**Repo:** https://github.com/khallammarellus-rgb/blackacre-in-character (Retail). Forever fork: https://github.com/khallammarellus-rgb/blackacre-in-character-forever
+**Version:** 2.0.0-dev  
+**Target:** WoW Forever beta only (`16001` / Camelot in `_classic_beta_`)  
+**Repo:** https://github.com/khallammarellus-rgb/blackacre-in-character-forever. Retail sibling: https://github.com/khallammarellus-rgb/blackacre-in-character
+
+**As of this split, Retail-only packages are still present but flagged for removal in a later pass — their presence here isn't an oversight, they just haven't been stripped out yet.** These are: Roadmap, Afterlife, Hardcore, PvP (all inside `Blackacre_Tome`), plus anything Life-Path related, since Forever has no verified quest/canon data to build Paths from.
 
 ---
 
@@ -36,20 +40,10 @@ A WoW addon for in-character immersive connections.
 ## Install (development)
 
 ```powershell
-git clone https://github.com/khallammarellus-rgb/blackacre-in-character.git
+git clone https://github.com/khallammarellus-rgb/blackacre-in-character-forever.git
 ```
 
 Junction **all four** folders into WoW AddOns (Admin PowerShell if needed).
-
-Retail:
-
-```powershell
-$root = "C:\Users\kvebe\InCharacter"
-$addons = "C:\Program Files (x86)\World of Warcraft\_retail_\Interface\AddOns"
-foreach ($p in @("Blackacre","Blackacre_Presence","Blackacre_Tome","Blackacre_Survival")) {
-  New-Item -ItemType Junction -Path "$addons\$p" -Target "$root\$p" -Force
-}
-```
 
 WoW Forever (beta lives in `_classic_beta_`):
 

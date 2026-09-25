@@ -1,4 +1,4 @@
-## Interface: 120007, 16001
+## Interface: 16001
 ## Interface-Camelot: 16001
 ## Title: Blackacre |cffc9a227Survival|r
 ## Notes: Hunger, thirst, and exposure meters by zone climate (honor system)
