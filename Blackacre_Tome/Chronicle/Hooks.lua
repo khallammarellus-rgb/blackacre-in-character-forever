@@ -222,5 +222,8 @@ function Blackacre.Chronicle.Hooks.Regenerate(entry)
     entry.title = title
     entry.body = body
     entry.editedAt = time()
+    if Blackacre.Chronicle.Store and Blackacre.Chronicle.Store.Touch then
+        Blackacre.Chronicle.Store.Touch()
+    end
     return entry
 end

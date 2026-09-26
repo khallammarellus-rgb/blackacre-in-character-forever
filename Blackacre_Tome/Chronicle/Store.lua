@@ -4,6 +4,18 @@ Blackacre.Chronicle.Store = {}
 
 local MAX_ENTRIES = 500
 
+-- Bumped on every change to any entry.  The book UI caches its page layout
+-- and only rebuilds when this moves, instead of on every page turn.
+local version = 0
+
+function Blackacre.Chronicle.Store.Touch()
+    version = version + 1
+end
+
+function Blackacre.Chronicle.Store.Version()
+    return version
+end
+
 local function EnsureDB()
     -- The active AceDB profile owns the feature data. BlackacreCharDB remains
     -- a compatibility mirror for older installs and the profile pointer.
@@ -60,6 +72,7 @@ function Blackacre.Chronicle.Store.Add(entry)
             table.remove(db.entries)
         end
     end
+    version = version + 1
     return entry
 end
 
@@ -70,6 +83,7 @@ function Blackacre.Chronicle.Store.Update(id, fields)
         entry[k] = v
     end
     entry.editedAt = time()
+    version = version + 1
     return entry
 end
 
@@ -78,6 +92,7 @@ function Blackacre.Chronicle.Store.Delete(id)
     for i, entry in ipairs(db.entries) do
         if entry.id == id then
             table.remove(db.entries, i)
+            version = version + 1
             return true
         end
     end

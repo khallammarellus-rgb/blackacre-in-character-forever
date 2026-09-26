@@ -4,6 +4,11 @@ Blackacre = Blackacre or {}
 Blackacre.Chronicle = Blackacre.Chronicle or {}
 Blackacre.Chronicle.UI = {}
 
+-- Hot-path upvalues (DBM-Core style): direct register reads, not global lookups.
+local type, ipairs, next, tostring, tonumber = type, ipairs, next, tostring, tonumber
+local time, wipe = time, wipe
+local CreateFrame, UIParent = CreateFrame, UIParent
+
 local journal
 local oldestFirst = true
 local filterKind = nil
@@ -188,26 +193,67 @@ local function BuildTocSlots(list)
 end
 
 --- Open-book model: leaf = physical page; spread = left+right; flip = one spread.
---- Entry: title+meta+body on same leaf; 1–2 leaves max; pack short entries sequentially.
+--- Entry: title+meta+body on same leaf; long entries continue onto as many leaves as needed.
 
-local function SplitBodyForPages(body)
-    body = body or ""
-    if #body <= CHARS_PER_ENTRY_PAGE then
-        return body, nil
+--- Fills `out` with the byte range of each leaf's slice of `body` as
+--- start1, end1, start2, end2, ...  No leaf limit: long-form entries run
+--- onto as many leaves as they need.  Editors save by splicing their slice
+--- back into the full body at these offsets, so a leaf never overwrites
+--- text it is not showing.  Whitespace between slices stays in the body.
+local function SplitBodyForPages(body, out)
+    wipe(out)
+    local len = #body
+    local start = 1
+    while true do
+        if len - start + 1 <= CHARS_PER_ENTRY_PAGE then
+            out[#out + 1] = start
+            out[#out + 1] = len
+            return out
+        end
+        local cut = start + CHARS_PER_ENTRY_PAGE - 1
+        -- Prefer break at whitespace so words stay whole
+        local space = body:sub(start, cut):match(".*()%s")
+        if space and space > CHARS_PER_ENTRY_PAGE * 0.5 then
+            cut = start + space - 2
+        end
+        local lastInk = body:sub(start, cut):match("^.*()%S")
+        out[#out + 1] = start
+        out[#out + 1] = lastInk and (start + lastInk - 1) or (start - 1)
+        local nextStart = body:find("%S", cut + 1)
+        if not nextStart then
+            return out
+        end
+        start = nextStart
     end
-    local cut = CHARS_PER_ENTRY_PAGE
-    -- Prefer break at whitespace so words stay whole
-    local space = body:sub(1, cut):match(".*()%s")
-    if space and space > cut * 0.5 then cut = space - 1 end
-    local a = body:sub(1, cut):gsub("%s+$", "")
-    local b = body:sub(cut + 1):gsub("^%s+", "")
-    if #b > CHARS_PER_ENTRY_PAGE then
-        b = b:sub(1, CHARS_PER_ENTRY_PAGE) -- hard cap: max two pages
-    end
-    return a, b
 end
 
-local function RebuildSpreads()
+local splitScratch = {}
+
+local BuildSpreads
+
+-- Page turns and jumps reuse the laid-out book unless something it depends
+-- on changed.  Rebuilding re-sorts, re-splits, and re-allocates every entry,
+-- which used to happen on every single page turn.  Full refreshes
+-- (RenderSpread without skipRebuild) pass force, so settings that change
+-- labels, like the calendar, still show immediately.
+local builtVersion, builtEntries, builtOldestFirst, builtFilter, builtSearch
+
+local function RebuildSpreads(force)
+    local store = Blackacre.Chronicle.Store
+    local ver = store.Version and store.Version() or 0
+    local entries = store.GetAll()
+    if not force and spreads[1]
+        and ver == builtVersion and entries == builtEntries
+        and oldestFirst == builtOldestFirst and filterKind == builtFilter
+        and searchText == builtSearch then
+        return
+    end
+    builtVersion, builtEntries = ver, entries
+    builtOldestFirst, builtFilter, builtSearch = oldestFirst, filterKind, searchText
+    BuildSpreads()
+end
+
+function BuildSpreads()
     spreads = {}
     local list = GetEntryList()
     local leafSeq = {} -- ordered physical leaves
@@ -246,29 +292,24 @@ local function RebuildSpreads()
         end
     end
 
-    -- --- Entry leaves: 1–2 per entry; pack sequentially ---
+    -- --- Entry leaves: one per slice; pack sequentially ---
     for j = 1, #list do
         local e = list[j]
-        local body1, body2 = SplitBodyForPages(e.body)
+        local body = e.body or ""
+        local ranges = SplitBodyForPages(body, splitScratch)
         local startLeaf = leafNum
-        leafSeq[#leafSeq + 1] = {
-            kind = "entry",
-            entry = e,
-            showTitle = true,
-            showMeta = true,
-            bodyPart = body1 or "",
-            isContinuation = false,
-            leafNum = leafNum,
-        }
-        leafNum = leafNum + 1
-        if body2 and body2 ~= "" then
+        for r = 1, #ranges, 2 do
+            local first = (r == 1)
             leafSeq[#leafSeq + 1] = {
                 kind = "entry",
                 entry = e,
-                showTitle = false,
-                showMeta = false,
-                bodyPart = body2,
-                isContinuation = true,
+                showTitle = first,
+                showMeta = first,
+                bodyPart = body:sub(ranges[r], ranges[r + 1]),
+                sourceBody = body,
+                segStart = ranges[r],
+                segEnd = ranges[r + 1],
+                isContinuation = not first,
                 leafNum = leafNum,
             }
             leafNum = leafNum + 1
@@ -364,11 +405,34 @@ local function GetScrap()
     return journal._scrap
 end
 
+-- Page editors are pooled: a spread re-render used to create a fresh EditBox
+-- and ScrollFrame per leaf and strand the old ones on the scrap frame forever.
+local titleEditPool = {}
+local bodyScrollPool = {}
+
+-- Detach a page editor from its entry before it is hidden.  Hiding a focused
+-- EditBox fires OnEditFocusLost; with the entry still attached, a retired
+-- continuation box could save only the half of the page that had already
+-- been redrawn, truncating the rest.
+local function RetirePageEdit(box)
+    if not box then return end
+    box._baEntry = nil
+    box._baSource = nil
+    box:SetScript("OnTextChanged", nil)
+    box:SetScript("OnEditFocusLost", nil)
+    box:ClearFocus()
+end
+
 local function ClearLeaf(leaf)
     if not leaf or not leaf._baKids then return end
     local scrap = GetScrap()
     for _, k in ipairs(leaf._baKids) do
         if k then
+            if k._baPool == "title" then
+                RetirePageEdit(k)
+            elseif k._baPool == "bodyScroll" then
+                RetirePageEdit(k._baEdit)
+            end
             if k.isResizing then k.isResizing = false end
             -- FontStrings do not support SetScript (OnUpdate etc.) — only frames/buttons.
             local otype = k.GetObjectType and k:GetObjectType() or ""
@@ -384,9 +448,14 @@ local function ClearLeaf(leaf)
             if k.ClearAllPoints then k:ClearAllPoints() end
             if k.SetParent then k:SetParent(scrap or nil) end
             if k.SetAlpha then k:SetAlpha(0) end
+            if k._baPool == "title" then
+                titleEditPool[#titleEditPool + 1] = k
+            elseif k._baPool == "bodyScroll" then
+                bodyScrollPool[#bodyScrollPool + 1] = k
+            end
         end
     end
-    leaf._baKids = {}
+    wipe(leaf._baKids)
 end
 
 local function AddKid(leaf, kid)
@@ -1363,22 +1432,64 @@ local function RenderBlankLeaf(leaf)
 end
 
 --- Freeform page text like Send Mail: no InputBox chrome; black while editing, graphite when locked.
-local function MakePageEditBox(parent, multi, leafSide)
+local function PageEdit_OnEscapePressed(self)
+    self:ClearFocus()
+end
+
+-- Right-click on body/title field → same add-note menu as empty parchment.
+-- Reads host/side from the box so a pooled box follows whichever leaf it is on.
+local function PageEdit_OnMouseUp(self, button)
+    if button == "RightButton" and self._baLeafSide then
+        OnLeafRightClick(self._baLeafHost, self._baLeafSide, button)
+    end
+end
+
+local function MakePageEditBox(parent, multi)
     local box = CreateFrame("EditBox", nil, parent)
     box:SetMultiLine(multi and true or false)
     box:SetAutoFocus(false)
     box:SetTextInsets(4, 4, 4, 4)
     if box.SetBackdrop then box:SetBackdrop(nil) end
-    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    -- Right-click on body/title field → same add-note menu as empty parchment
-    if leafSide then
-        box:HookScript("OnMouseUp", function(_, button)
-            if button == "RightButton" then
-                OnLeafRightClick(parent, leafSide, button)
-            end
-        end)
-    end
+    box:SetScript("OnEscapePressed", PageEdit_OnEscapePressed)
+    box:HookScript("OnMouseUp", PageEdit_OnMouseUp)
     return box
+end
+
+local function ReviveKid(kid, parent)
+    kid:SetParent(parent)
+    kid:SetAlpha(1)
+    kid:EnableMouse(true)
+    kid:Show()
+end
+
+local function AcquireTitleEdit(host, leafSide)
+    local box = table.remove(titleEditPool)
+    if box then
+        ReviveKid(box, host)
+    else
+        box = MakePageEditBox(host, false)
+        box._baPool = "title"
+    end
+    box._baLeafHost = host
+    box._baLeafSide = leafSide
+    return box
+end
+
+local function AcquireBodyScroll(host, leafSide)
+    local scroll = table.remove(bodyScrollPool)
+    if scroll then
+        ReviveKid(scroll, host)
+        ReviveKid(scroll._baEdit, scroll)
+        scroll:SetVerticalScroll(0)
+    else
+        scroll = CreateFrame("ScrollFrame", nil, host)
+        scroll._baPool = "bodyScroll"
+        scroll._baEdit = MakePageEditBox(scroll, true)
+        scroll:EnableMouse(true)
+    end
+    scroll._baEdit._baLeafHost = host
+    scroll._baEdit._baLeafSide = leafSide
+    return scroll, scroll._baEdit
 end
 
 local function StyleEditLocked(box, locked)
@@ -1397,6 +1508,12 @@ end
 -- Persist the rendered editors directly.  The old implementation only read
 -- the controls when the Journal toggle changed from On to Locked, so text
 -- could still exist only in an EditBox when the player reloaded the UI.
+local persistBoxes = {}
+local persistOut = {}
+local function BySegStart(a, b)
+    return a._baSegStart < b._baSegStart
+end
+
 local function PersistEntryFromEditors(entry, showToast)
     if not journal or not entry or not entry.id then return nil, false end
 
@@ -1414,17 +1531,45 @@ local function PersistEntryFromEditors(entry, showToast)
         titleText = journal.titleEdit:GetText() or ""
     end
 
-    local parts = {}
-    for _, box in ipairs(journal._baBodyParts or {}) do
-        if box._baEntry and box._baEntry.id == entry.id and box.GetText then
-            parts[#parts + 1] = box:GetText() or ""
+    -- Each body editor shows one slice (segStart..segEnd) of the body as it
+    -- was when the spread was drawn.  Rebuild the full body from that source,
+    -- replacing only the visible slices.  Joining just the visible boxes used
+    -- to save a continuation leaf as the whole entry, dropping page one.
+    -- Runs on every keystroke: scratch tables are reused, not allocated.
+    local boxes = persistBoxes
+    wipe(boxes)
+    local bodyParts = journal._baBodyParts
+    if bodyParts then
+        for i = 1, #bodyParts do
+            local box = bodyParts[i]
+            if box._baEntry and box._baEntry.id == entry.id and box._baSource then
+                boxes[#boxes + 1] = box
+            end
         end
     end
-    if #parts == 0 and journal.bodyEdit and journal.bodyEdit._baEntry
-        and journal.bodyEdit._baEntry.id == entry.id and journal.bodyEdit.GetText then
-        parts[1] = journal.bodyEdit:GetText() or ""
+    local bodyText = entry.body or ""
+    local count = #boxes
+    if count == 1 then
+        -- Common case: one leaf of this entry is on screen.
+        local box, source = boxes[1], boxes[1]._baSource
+        bodyText = source:sub(1, box._baSegStart - 1) .. (box:GetText() or "")
+            .. source:sub(box._baSegEnd + 1)
+    elseif count > 1 then
+        table.sort(boxes, BySegStart)
+        local source = boxes[1]._baSource
+        local out = persistOut
+        wipe(out)
+        out[1] = source:sub(1, boxes[1]._baSegStart - 1)
+        for i = 1, count do
+            local box, nextBox = boxes[i], boxes[i + 1]
+            out[#out + 1] = box:GetText() or ""
+            out[#out + 1] = source:sub(box._baSegEnd + 1,
+                nextBox and (nextBox._baSegStart - 1) or #source)
+        end
+        bodyText = table.concat(out)
+        wipe(out)
     end
-    local bodyText = #parts > 0 and table.concat(parts, "\n\n") or (entry.body or "")
+    wipe(boxes)
     if titleText == (entry.title or "") and bodyText == (entry.body or "") then
         return entry, false
     end
@@ -1446,6 +1591,19 @@ local function PersistEntryFromEditors(entry, showToast)
     return updated, updated ~= nil
 end
 
+-- Shared handlers (no per-render closures). A retired editor has no entry,
+-- so PersistEntryFromEditors returns early for it.
+local function PageEdit_Persist(self)
+    PersistEntryFromEditors(self._baEntry, false)
+end
+
+local function BodyScroll_OnMouseUp(self, button)
+    local edit = self._baEdit
+    if button == "RightButton" and edit and edit._baLeafSide then
+        OnLeafRightClick(edit._baLeafHost, edit._baLeafSide, button)
+    end
+end
+
 --- One physical leaf of an entry: title+meta lead body on the SAME page (or continuation body).
 local function RenderEntryLeaf(host, leafData, leafSide)
     ClearLeaf(host)
@@ -1461,7 +1619,7 @@ local function RenderEntryLeaf(host, leafData, leafSide)
     local yTop = -14
 
     if leafData.showTitle then
-        local titleEdit = MakePageEditBox(host, false, leafSide)
+        local titleEdit = AcquireTitleEdit(host, leafSide)
         titleEdit:SetPoint("TOPLEFT", 12, yTop)
         titleEdit:SetPoint("TOPRIGHT", -12, yTop)
         titleEdit:SetHeight(26)
@@ -1470,12 +1628,8 @@ local function RenderEntryLeaf(host, leafData, leafSide)
         titleEdit:SetJustifyH("LEFT")
         titleEdit._baEntry = entry
         titleEdit._baIsTitle = true
-        titleEdit:SetScript("OnTextChanged", function(self)
-            PersistEntryFromEditors(self._baEntry, false)
-        end)
-        titleEdit:SetScript("OnEditFocusLost", function(self)
-            PersistEntryFromEditors(self._baEntry, false)
-        end)
+        titleEdit:SetScript("OnTextChanged", PageEdit_Persist)
+        titleEdit:SetScript("OnEditFocusLost", PageEdit_Persist)
         if editing then
             titleEdit:SetTextColor(0.05, 0.05, 0.06, 1)
             titleEdit:Enable()
@@ -1520,18 +1674,12 @@ local function RenderEntryLeaf(host, leafData, leafSide)
         yTop = yTop - 18
     end
 
-    local bodyScroll = CreateFrame("ScrollFrame", nil, host)
+    local bodyScroll, bodyEdit = AcquireBodyScroll(host, leafSide)
     bodyScroll:SetPoint("TOPLEFT", 10, yTop)
     bodyScroll:SetPoint("BOTTOMRIGHT", -14, 44)
-    bodyScroll:EnableMouse(true)
-    bodyScroll:SetScript("OnMouseUp", function(_, button)
-        if button == "RightButton" then
-            OnLeafRightClick(host, leafSide, button)
-        end
-    end)
+    bodyScroll:SetScript("OnMouseUp", BodyScroll_OnMouseUp)
     AddKid(host, bodyScroll)
 
-    local bodyEdit = MakePageEditBox(bodyScroll, true, leafSide)
     local bodyText = leafData.bodyPart or entry.body or ""
     if Blackacre.UI.Theme.SanitizeBodyText then
         bodyText = Blackacre.UI.Theme.SanitizeBodyText(bodyText)
@@ -1544,12 +1692,12 @@ local function RenderEntryLeaf(host, leafData, leafSide)
     bodyEdit:SetHeight(math.max(360, (host:GetHeight() or 400) - 80))
     bodyEdit._baEntry = entry
     bodyEdit._baIsContinuation = leafData.isContinuation and true or false
-    bodyEdit:SetScript("OnTextChanged", function(self)
-        PersistEntryFromEditors(self._baEntry, false)
-    end)
-    bodyEdit:SetScript("OnEditFocusLost", function(self)
-        PersistEntryFromEditors(self._baEntry, false)
-    end)
+    local source = leafData.sourceBody or entry.body or ""
+    bodyEdit._baSource = source
+    bodyEdit._baSegStart = leafData.segStart or 1
+    bodyEdit._baSegEnd = leafData.segEnd or #source
+    bodyEdit:SetScript("OnTextChanged", PageEdit_Persist)
+    bodyEdit:SetScript("OnEditFocusLost", PageEdit_Persist)
 
     -- Save uses primary body box (page 1); continuations still edit-able but Save merges carefully
     if not journal.bodyEdit or leafData.showTitle then
@@ -1599,7 +1747,7 @@ function Blackacre.Chronicle.UI.RenderSpread(skipRebuild)
     if journal.tocMenu then journal.tocMenu:Hide() end
     EndPinMode()
     if not skipRebuild then
-        RebuildSpreads()
+        RebuildSpreads(true)
     end
     if spreadIndex < 1 then spreadIndex = 1 end
     if spreadIndex > #spreads then spreadIndex = math.max(1, #spreads) end

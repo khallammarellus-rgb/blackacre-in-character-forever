@@ -3,6 +3,11 @@ Blackacre.Survival = Blackacre.Survival or {}
 Blackacre.Survival.Engine = {}
 Blackacre.Survival.Engine.BUILD = "2026-09-20-stacks"
 
+-- Hot-path upvalues (DBM-Core style): direct register reads, not global lookups.
+local time, tostring, tonumber = time, tostring, tonumber
+local UnitRace, CreateFrame = UnitRace, CreateFrame
+local C_Container, C_Timer = C_Container, C_Timer
+
 local TICK_SEC = 15
 local DEBUFF_AT = 10
 local MAX_CATCHUP_SEC = 300

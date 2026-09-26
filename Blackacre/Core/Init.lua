@@ -3,6 +3,13 @@
 -- and feature data live in the active profile's characterData. The old
 -- per-character table is retained as a recovery mirror for existing installs.
 
+-- Hot-path upvalues (DBM-Core style): direct register reads, not global lookups.
+local type, pairs, ipairs, next, tostring = type, pairs, ipairs, next, tostring
+local time, GetTime, strtrim = time, GetTime, strtrim
+local UnitName, GetRealmName, GetSubZoneText = UnitName, GetRealmName, GetSubZoneText
+local UnitAffectingCombat, CreateFrame = UnitAffectingCombat, CreateFrame
+local C_Map, C_Timer = C_Map, C_Timer
+
 local AceAddon = LibStub("AceAddon-3.0")
 
 Blackacre = Blackacre or {}
@@ -488,8 +495,14 @@ end
 -- global after that call, the DB object can remain attached to an empty table
 -- while the loaded global still contains the user's data. Recreate the object
 -- once at PLAYER_LOGIN, when all globals are unquestionably available.
-local function RebindAceDatabase(addon)
+-- Only when the global really was swapped (or `force` from /ba storage):
+-- rebuilding unconditionally strands any module that already holds the old
+-- profile tables, and whatever it writes afterwards is never saved.
+local function RebindAceDatabase(addon, force)
     if type(BlackacreAceDB) ~= "table" then return false end
+    if not force and addon.db and addon.db.sv == BlackacreAceDB then
+        return false
+    end
 
     local aceDB = LibStub("AceDB-3.0")
     if addon.db and aceDB.db_registry then
@@ -849,7 +862,7 @@ SlashCmdList["BLACKACRE"] = function(msg)
             or (type(pointer) == "string" and pointer ~= current)
         )
         if bindingMismatch then
-            RebindAceDatabase(addon)
+            RebindAceDatabase(addon, true)
             active = Blackacre.db and Blackacre.db.profile
             current = Blackacre.db and Blackacre.db:GetCurrentProfile() or "(unavailable)"
             profileEntries = CountEntries(active and active.characterData)

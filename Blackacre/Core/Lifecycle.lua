@@ -1,6 +1,10 @@
 Blackacre = Blackacre or {}
 Blackacre.Lifecycle = {}
 
+-- Hot-path upvalues (DBM-Core style): direct register reads, not global lookups.
+local pairs, time, tonumber = pairs, time, tonumber
+local C_Timer, CreateFrame = C_Timer, CreateFrame
+
 local function BeaconTTL()
     return (Blackacre.BeaconConfig and Blackacre.BeaconConfig.TTL) or (24 * 60 * 60)
 end
