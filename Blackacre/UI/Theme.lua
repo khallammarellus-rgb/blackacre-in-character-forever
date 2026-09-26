@@ -1321,17 +1321,28 @@ function Blackacre.UI.Theme.ApplyRail(frame)
         bar.titleRight:SetPoint("RIGHT", bar, "RIGHT", 0, 0)
         bar.titleRight:SetSize(capW, h)
 
-        if leftAtlas then Blackacre.UI.Theme.TrySetAtlas(bar.titleLeft, leftAtlas, false) end
-        if rightAtlas then Blackacre.UI.Theme.TrySetAtlas(bar.titleRight, rightAtlas, false) end
+        -- An atlas name that fails to resolve used to leave the cap texture
+        -- blank, exposing the bar's backdrop color underneath it instead of
+        -- art. If either cap can't be painted, drop caps entirely for this
+        -- render so the rail spans the full width instead of leaving a hole.
+        local leftOk = leftAtlas and Blackacre.UI.Theme.TrySetAtlas(bar.titleLeft, leftAtlas, false)
+        local rightOk = rightAtlas and Blackacre.UI.Theme.TrySetAtlas(bar.titleRight, rightAtlas, false)
 
-        bar.titleLeft:Show()
-        bar.titleRight:Show()
+        if leftOk and rightOk then
+            bar.titleLeft:Show()
+            bar.titleRight:Show()
 
-        -- Center rail matches exact width between caps flush
-        rail:ClearAllPoints()
-        rail:SetPoint("LEFT", bar.titleLeft, "RIGHT", 0, 0)
-        rail:SetPoint("RIGHT", bar.titleRight, "LEFT", 0, 0)
-        rail:SetHeight(h)
+            -- Center rail matches exact width between caps flush
+            rail:ClearAllPoints()
+            rail:SetPoint("LEFT", bar.titleLeft, "RIGHT", 0, 0)
+            rail:SetPoint("RIGHT", bar.titleRight, "LEFT", 0, 0)
+            rail:SetHeight(h)
+        else
+            bar.titleLeft:Hide()
+            bar.titleRight:Hide()
+            rail:ClearAllPoints()
+            rail:SetAllPoints(bar)
+        end
     else
         if bar.titleLeft then bar.titleLeft:Hide() end
         if bar.titleRight then bar.titleRight:Hide() end
@@ -1340,6 +1351,43 @@ function Blackacre.UI.Theme.ApplyRail(frame)
         rail:ClearAllPoints()
         rail:SetAllPoints(bar)
     end
+end
+
+--- Page bookmark tab (region: gutter edge of a bookmarked Chronicle page).
+--- Owner-confirmed atlas: AlliedRace-UnlockingFrame-RaceBanner
+--- (Interface/AlliedRaces/AlliedRacesUnlockingFramePart2). Full length, no
+--- crop -- native aspect ratio scaled to whatever page height it's given.
+--- flipH mirrors it for the left page, so it drapes toward the gutter from
+--- the correct side instead of showing the same edge on both pages.
+--- Returns the width the caller should reserve at the gutter, or nil if the
+--- atlas didn't resolve (caller should fall back to a placeholder).
+function Blackacre.UI.Theme.ApplyBookmarkTab(tex, targetHeight, flipH)
+    if not tex then return nil end
+    local atlasName = "AlliedRace-UnlockingFrame-RaceBanner"
+    local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(atlasName)
+    local file = info and (info.filename or info.file)
+    if file then
+        tex:SetTexture(file)
+    elseif not Blackacre.UI.Theme.TrySetAtlas(tex, atlasName, false) then
+        return nil
+    end
+    if tex.SetHorizTile then tex:SetHorizTile(false) end
+    if tex.SetVertTile then tex:SetVertTile(false) end
+    local l = (info and (info.leftTexCoord or info.left)) or 0
+    local r = (info and (info.rightTexCoord or info.right)) or 1
+    local t = (info and (info.topTexCoord or info.top)) or 0
+    local b = (info and (info.bottomTexCoord or info.bottom)) or 1
+    if flipH then
+        tex:SetTexCoord(r, l, t, b)
+    else
+        tex:SetTexCoord(l, r, t, b)
+    end
+    local iw = (info and info.width) or 64
+    local ih = (info and info.height) or 256
+    local aspect = (ih > 0) and (iw / ih) or 0.25
+    targetHeight = targetHeight or ih
+    local width = math.max(4, targetHeight * aspect)
+    return width, targetHeight
 end
 
 function Blackacre.UI.Theme.ApplyTocBookmark(frame)
@@ -1370,7 +1418,11 @@ function Blackacre.UI.Theme.ApplyTocBookmark(frame)
     local iw = (info and info.width) or 80
     local ih = (info and info.height) or 128
     local bw = math.max(28, math.min(48, (iw or 80) * (cropW or 1) * 0.5))
-    local bh = math.max(80, math.min(140, (ih or 128) * 0.5))
+    -- Raised floor/ceiling: this regressed shorter at some point (per owner
+    -- report), and it now also needs to be reliably taller than the page
+    -- bookmark tab that stacks on top of it, so its tail still peeks out
+    -- below as a clickable tongue instead of being fully covered.
+    local bh = math.max(180, math.min(320, (ih or 128) * 0.5))
     frame.chronicleBookmark:SetSize(bw, bh)
     banner:SetAlpha(1)
     banner:ClearAllPoints()

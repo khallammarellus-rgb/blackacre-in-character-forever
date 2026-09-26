@@ -62,6 +62,16 @@ local function Graphite(fs)
     end
 end
 
+--- UIPanelButtonTemplate does not auto-fit its label -- a caption longer than
+--- the fixed width you gave the button spills text past the button's own
+--- cap/middle textures. Call after SetText so the button always grows to fit.
+local function FitButtonWidth(btn, minW)
+    minW = minW or 114
+    local fs = btn.GetFontString and btn:GetFontString()
+    local textW = fs and fs.GetStringWidth and fs:GetStringWidth() or 0
+    btn:SetWidth(math.max(minW, math.ceil(textW) + 24))
+end
+
 local function TryAtlas(tex, name, useSize)
     if not tex or not name then return false end
     local th = Theme()
@@ -155,6 +165,33 @@ local function GetEntryList()
     return list
 end
 
+local function ByCreatedAt(a, b)
+    return (a.entry.createdAt or 0) < (b.entry.createdAt or 0)
+end
+
+--- Bookmarked slots: one "Bookmarked" heading, entries in the order they were
+--- created (not reshuffled when bookmarked), then a divider before the
+--- standard year-grouped TOC. Bookmarked entries still appear again in their
+--- own year section below -- this is a quick-jump list, not a second inbox.
+local function BuildBookmarkedSlots(list)
+    local bookmarked = {}
+    for j = 1, #list do
+        if list[j].pinned then
+            bookmarked[#bookmarked + 1] = { kind = "entry", entry = list[j], listIndex = j }
+        end
+    end
+    if #bookmarked == 0 then
+        return nil
+    end
+    table.sort(bookmarked, ByCreatedAt)
+    local slots = { { kind = "year", label = "Bookmarked", yearKey = "__bookmarked__" } }
+    for _, row in ipairs(bookmarked) do
+        slots[#slots + 1] = row
+    end
+    slots[#slots + 1] = { kind = "divider" }
+    return slots
+end
+
 --- TOC slots: year subheading then entries that share that year (sorted by year).
 local function BuildTocSlots(list)
     local byKey = {}
@@ -182,7 +219,7 @@ local function BuildTocSlots(list)
         end
         return a.sortVal > b.sortVal
     end)
-    local slots = {}
+    local slots = BuildBookmarkedSlots(list) or {}
     for _, g in ipairs(order) do
         slots[#slots + 1] = { kind = "year", label = g.label, yearKey = g.key }
         for _, row in ipairs(g.entries) do
@@ -543,17 +580,22 @@ local function ShowTocEntryMenu(entry)
         m:Hide()
         local function Mk(y, label)
             local b = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-            b:SetSize(114, 22)
+            b:SetHeight(22)
             b:SetPoint("TOP", 0, y)
             b:SetText(label)
+            FitButtonWidth(b, 114)
             return b
         end
         m.editBtn = Mk(-8, "Edit title")
-        m.pinBtn = Mk(-34, "Pin / Unpin")
+        m.pinBtn = Mk(-34, "Bookmark page")
         m.delBtn = Mk(-60, "Delete page")
         journal.tocMenu = m
     end
     local m = journal.tocMenu
+    m.pinBtn:SetText(entry.pinned and "Remove bookmark" or "Bookmark page")
+    FitButtonWidth(m.pinBtn, 114)
+    local widest = math.max(m.editBtn:GetWidth(), m.pinBtn:GetWidth(), m.delBtn:GetWidth())
+    m:SetWidth(widest + 16)
     m.editBtn:SetScript("OnClick", function()
         m:Hide()
         ShowTitleEditPopup(entry)
@@ -563,7 +605,7 @@ local function ShowTocEntryMenu(entry)
         Blackacre.Chronicle.Store.Update(entry.id, { pinned = entry.pinned })
         if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
         if Blackacre.Print then
-            Blackacre.Print(entry.pinned and "Page pinned in TOC" or "Page unpinned from TOC")
+            Blackacre.Print(entry.pinned and "Page bookmarked" or "Bookmark removed")
         end
         m:Hide()
         Blackacre.Chronicle.UI.RenderSpread()
@@ -1124,14 +1166,14 @@ local function HideAddNoteMenu()
     end
 end
 
---- Cursor popup: Add scrap note? / Cancel (no chat toasts).
+--- Cursor popup: Add scrap note? / Bookmark (un)bookmark this page / Cancel.
 local function ShowAddNoteMenuAtCursor(side)
     local entry = EntryOnLeafSide(side)
     if not entry then return end -- TOC / blank: do nothing, no toast
 
     if not journal.addNoteMenu then
         local m = CreateFrame("Frame", "BlackacreAddNoteMenu", UIParent, "BackdropTemplate")
-        m:SetSize(150, 64)
+        m:SetSize(150, 90)
         m:SetFrameStrata("FULLSCREEN_DIALOG")
         if Theme() and Theme().ApplyChromeMenuFrame then
             Theme().ApplyChromeMenuFrame(m)
@@ -1139,14 +1181,20 @@ local function ShowAddNoteMenuAtCursor(side)
         m:EnableMouse(true)
         m:Hide()
         local addBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-        addBtn:SetSize(130, 22)
+        addBtn:SetHeight(22)
         addBtn:SetPoint("TOP", 0, -8)
         addBtn:SetText("Add scrap note")
+        FitButtonWidth(addBtn, 130)
         m.addBtn = addBtn
+        local bookmarkBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
+        bookmarkBtn:SetHeight(22)
+        bookmarkBtn:SetPoint("TOP", addBtn, "BOTTOM", 0, -6)
+        m.bookmarkBtn = bookmarkBtn
         local cancelBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-        cancelBtn:SetSize(130, 22)
-        cancelBtn:SetPoint("TOP", addBtn, "BOTTOM", 0, -6)
+        cancelBtn:SetHeight(22)
+        cancelBtn:SetPoint("TOP", bookmarkBtn, "BOTTOM", 0, -6)
         cancelBtn:SetText("Cancel")
+        FitButtonWidth(cancelBtn, 130)
         cancelBtn:SetScript("OnClick", function() m:Hide() end)
         m.cancelBtn = cancelBtn
         journal.addNoteMenu = m
@@ -1158,6 +1206,22 @@ local function ShowAddNoteMenuAtCursor(side)
         AddStickyToLeaf(m._baSide)
         m:Hide()
     end)
+
+    m.bookmarkBtn:SetText(entry.pinned and "Remove bookmark" or "Bookmark page")
+    FitButtonWidth(m.bookmarkBtn, 130)
+    m.bookmarkBtn:SetScript("OnClick", function()
+        entry.pinned = not entry.pinned
+        Blackacre.Chronicle.Store.Update(entry.id, { pinned = entry.pinned })
+        if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
+        if Blackacre.Print then
+            Blackacre.Print(entry.pinned and "Page bookmarked" or "Bookmark removed")
+        end
+        m:Hide()
+        Blackacre.Chronicle.UI.RenderSpread()
+    end)
+
+    local widest = math.max(m.addBtn:GetWidth(), m.bookmarkBtn:GetWidth(), m.cancelBtn:GetWidth())
+    m:SetWidth(widest + 20)
 
     local scale = UIParent:GetEffectiveScale() or 1
     local x, y = GetCursorPosition()
@@ -1311,8 +1375,11 @@ local function PlaceTocLine(btn, ly, titleText, pageStr)
     end
 end
 
+local HideBookmarkTab -- forward decl; page bookmark tab defined near RenderEntryLeaf
+
 local function RenderTocLeaf(leaf, items, heading, leafSide)
     ClearLeaf(leaf)
+    HideBookmarkTab(leafSide)
     -- Must receive mouse so top TOC rows are clickable (siblings like TOC bookmark can steal hits)
     leaf:EnableMouse(false) -- clicks go to children only
     local w = leaf:GetWidth()
@@ -1346,7 +1413,16 @@ local function RenderTocLeaf(leaf, items, heading, leafSide)
 
     local y = -6 - (titleBar:GetHeight() or 45) - 8
     for _, row in ipairs(items) do
-        if row.kind == "year" then
+        if row.kind == "divider" then
+            -- Plain rule, not an atlas guess -- swap for a themed divider once
+            -- the owner points TAV at a real one and we confirm the name.
+            local rule = leaf:CreateTexture(nil, "ARTWORK")
+            rule:SetPoint("TOP", leaf, "TOP", 0, y - 4)
+            rule:SetSize(w - 48, 2)
+            rule:SetColorTexture(0.55, 0.45, 0.25, 0.5)
+            AddKid(leaf, rule)
+            y = y - 18
+        elseif row.kind == "year" then
             -- Wings sit ~10px off the year text (not the leaf edge). Right wing is a H-flip of the same atlas.
             local yearBar = CreateFrame("Frame", nil, leaf)
             yearBar:SetPoint("TOP", leaf, "TOP", 0, y)
@@ -1605,10 +1681,107 @@ local function BodyScroll_OnMouseUp(self, button)
 end
 
 --- One physical leaf of an entry: title+meta lead body on the SAME page (or continuation body).
+-- Page bookmark tabs live OUTSIDE the leaf frames (hub.leftPage/rightPage, per
+-- Theme.lua:956,963, hard-clip any child at their own rect via SetClipsChildren
+-- -- no draw-layer/sublevel trick escapes that). Parented instead to
+-- hub.bookOpen (unclipped, same as the TOC bookmark / region 8), with a
+-- FrameLevel above the leaf's own so it still draws over the page art, and
+-- positioned by anchors to the leaf's edge, so it reads the same height as
+-- the TOC bookmark tab instead of being boxed into the leaf's rectangle.
+local function EnsureBookmarkTab(side)
+    journal.bookmarkTabs = journal.bookmarkTabs or {}
+    local t = journal.bookmarkTabs[side]
+    if t then return t end
+    local hub = Blackacre.TomeHub and Blackacre.TomeHub.GetFrame and Blackacre.TomeHub.GetFrame()
+    local parent = (hub and hub.bookOpen) or journal
+    t = CreateFrame("Frame", nil, parent)
+    t.tex = t:CreateTexture(nil, "ARTWORK")
+    t.tex:SetAllPoints(t)
+    -- Fades the gutter-facing edge into the spine's own dark color instead of
+    -- showing a hard rectangular cutoff -- the tab reads as draping into
+    -- shadow rather than being clipped.
+    t.shadow = t:CreateTexture(nil, "OVERLAY")
+    t:Hide()
+    journal.bookmarkTabs[side] = t
+    return t
+end
+
+HideBookmarkTab = function(side)
+    local t = journal and journal.bookmarkTabs and journal.bookmarkTabs[side]
+    if t then t:Hide() end
+end
+
+-- Owner call: the gutter is where a real sticky page-tab would be USELESS
+-- (hidden in the spine fold) -- real tabs live on the fore-edge, the outer
+-- side you thumb through to find a marked page. Moved there: left page's tab
+-- on its own LEFT (outer) edge, right page's on its own RIGHT (outer) edge,
+-- mirrored versions of each other. No spine to fake falling into, so the
+-- whole gutter-shadow/bleed mechanism from the gutter-placement attempt is
+-- gone -- nothing left to blend into.
+--
+-- The book's existing TOC-jump tab (hub.chronicleBookmark, region 8, per
+-- Theme.lua:919) already lives on the LEFT outer edge. Owner wants them
+-- stacked as ONE combined tab, not two separate ones: this tab drawn on top,
+-- starting at the same height as chronicleBookmark (which Theme.lua now
+-- makes reliably taller than this one), so the TOC tab's tail still peeks
+-- out below as a clickable tongue. Both anchor to bookOpen's own top (the
+-- same reference chronicleBookmark uses), not the leaf's, so they align
+-- pixel-for-pixel instead of the leaf's own ~20px inset throwing them off.
+local function ShowBookmarkTab(host, leafSide)
+    local tabFrame = journal and EnsureBookmarkTab(leafSide)
+    if not tabFrame then return end
+    if tabFrame.shadow then tabFrame.shadow:Hide() end -- unused on the outer edge; nothing to fade into
+    local leafH = host:GetHeight()
+    if not leafH or leafH < 50 then leafH = 480 end
+    -- Owner: scaled to 40% then reduced another 25% (net 30% of the leaf
+    -- height), aspect ratio kept throughout.
+    local targetH = leafH * 0.3
+    local flipH = leafSide == "right" -- mirrored so the cut edge faces the page's own outer edge, not inward
+    local tabWidth, tabHeight
+    local th = Theme()
+    if th and th.ApplyBookmarkTab then
+        tabWidth, tabHeight = th.ApplyBookmarkTab(tabFrame.tex, targetH, flipH)
+    end
+    if not tabWidth then
+        -- Atlas didn't resolve (not yet confirmed for this skin/flavor) --
+        -- flat-color placeholder so a bookmarked page is still visibly marked.
+        tabFrame.tex:SetColorTexture(0.55, 0.5, 0.42, 0.85)
+        tabWidth, tabHeight = 28, targetH
+    end
+    tabFrame:SetSize(tabWidth, tabHeight)
+    tabFrame:ClearAllPoints()
+
+    local hub = Blackacre.TomeHub and Blackacre.TomeHub.GetFrame and Blackacre.TomeHub.GetFrame()
+    local tocTab = hub and hub.chronicleBookmark
+    -- Draw above the TOC tab so this one reads as the top layer of the stack.
+    tabFrame:SetFrameLevel(((tocTab and tocTab:GetFrameLevel()) or (host:GetFrameLevel() or 1)) + 1)
+
+    if leafSide == "right" then
+        -- Right page's outer edge is its own right edge. Pulled in from the
+        -- window's outer border (it was touching the shell at +4) -- the TOC
+        -- tab on the left isn't touched, it just happens to clear the border
+        -- already at its own -4.
+        if hub and hub.bookOpen then
+            tabFrame:SetPoint("TOPRIGHT", hub.bookOpen, "TOPRIGHT", -2, 0)
+        else
+            tabFrame:SetPoint("TOPRIGHT", host, "TOPRIGHT", 8, 0)
+        end
+    else
+        -- Left page's outer edge is its own left edge -- same top as the TOC tab.
+        if hub and hub.bookOpen then
+            tabFrame:SetPoint("TOPLEFT", hub.bookOpen, "TOPLEFT", 4, 0)
+        else
+            tabFrame:SetPoint("TOPLEFT", host, "TOPLEFT", 8, 0)
+        end
+    end
+    tabFrame:Show()
+end
+
 local function RenderEntryLeaf(host, leafData, leafSide)
     ClearLeaf(host)
     host._baLeafSide = leafSide
     if not leafData or not leafData.entry then
+        HideBookmarkTab(leafSide)
         RenderBlankLeaf(host)
         return
     end
@@ -1618,10 +1791,20 @@ local function RenderEntryLeaf(host, leafData, leafSide)
     if not w or w < 50 then w = 320 end
     local yTop = -14
 
+    -- The bookmark tab now lives on hub.bookOpen, outside the leaf's own
+    -- rect, so it no longer needs the leaf's text pushed over to clear it.
+    if entry.pinned then
+        ShowBookmarkTab(host, leafSide)
+    else
+        HideBookmarkTab(leafSide)
+    end
+    local padLeft = 12
+    local padRight = 12
+
     if leafData.showTitle then
         local titleEdit = AcquireTitleEdit(host, leafSide)
-        titleEdit:SetPoint("TOPLEFT", 12, yTop)
-        titleEdit:SetPoint("TOPRIGHT", -12, yTop)
+        titleEdit:SetPoint("TOPLEFT", padLeft, yTop)
+        titleEdit:SetPoint("TOPRIGHT", -padRight, yTop)
         titleEdit:SetHeight(26)
         titleEdit:SetFontObject(GameFontNormalLarge)
         titleEdit:SetText(entry.title or "Untitled")
@@ -1650,8 +1833,8 @@ local function RenderEntryLeaf(host, leafData, leafSide)
 
     if leafData.showMeta then
         local meta = host:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        meta:SetPoint("TOPLEFT", 12, yTop)
-        meta:SetPoint("TOPRIGHT", -12, yTop)
+        meta:SetPoint("TOPLEFT", padLeft, yTop)
+        meta:SetPoint("TOPRIGHT", -padRight, yTop)
         meta:SetJustifyH("LEFT")
         local metaText = string.format("%s | %s | %s",
             KindLabel(entry.kind),
@@ -1667,7 +1850,7 @@ local function RenderEntryLeaf(host, leafData, leafSide)
         yTop = yTop - 36
     elseif leafData.isContinuation then
         local cont = host:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        cont:SetPoint("TOPLEFT", 12, yTop)
+        cont:SetPoint("TOPLEFT", padLeft, yTop)
         cont:SetText("(continued)")
         Graphite(cont)
         AddKid(host, cont)
