@@ -1,0 +1,14 @@
+## Interface: 16001
+## Interface-Camelot: 16001
+## Title: In Character Forever: |cffc9a227Survival|r
+## Notes: Hunger, thirst, and exposure meters by zone climate (honor system)
+## Version: 2.0.0-dev
+## Author: khallammarellus-rgb
+## RequiredDeps: Blackacre
+## OptionalDeps: Blackacre_Tome
+## Category-enUS: Roleplay
+
+Data\ZoneClimate.lua
+Survival\Engine.lua
+Survival\UI_Meters.lua
+Bootstrap.lua

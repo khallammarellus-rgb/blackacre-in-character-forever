@@ -1,0 +1,10 @@
+package-as: Blackacre
+
+move-folders:
+  Blackacre/Blackacre: Blackacre
+  Blackacre/Blackacre_Tome: Blackacre_Tome
+  Blackacre/Blackacre_Survival: Blackacre_Survival
+  Blackacre/Blackacre_Presence: Blackacre_Presence
+
+ignore:
+  - README.md

@@ -1,0 +1,23 @@
+## Interface: 16001
+## Interface-Camelot: 16001
+## Title: In Character Forever: |cffc9a227Beacons & Bulletins|r
+## Notes: Beacons (crumbs on hidden Blackacre channel) and inn bulletins
+## Version: 2.0.0-dev
+## Author: khallammarellus-rgb
+## RequiredDeps: Blackacre
+## Category-enUS: Roleplay
+
+Data\SentenceTemplates.lua
+Data\Boards.lua
+Data\BeaconDisplay.lua
+UI\PostEditor.lua
+UI\MyPostings.lua
+UI\Trails.lua
+Presence\BeaconHead.lua
+Presence\BeaconHint.lua
+Presence\BeaconEmitter.lua
+Presence\YellowPages.lua
+Presence\InnRelay.lua
+Presence\Report.lua
+Presence\InnGossip.lua
+Bootstrap.lua

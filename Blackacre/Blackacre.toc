@@ -1,0 +1,34 @@
+## Interface: 16001
+## Interface-Camelot: 16001
+## Title: In Character Forever
+## Notes: Roleplay for WoW Forever: journal, survival, beacons and bulletins.
+## Version: 2.0.0-dev
+## Author: khallammarellus-rgb
+## X-License: MIT
+## IconTexture: Interface\Icons\INV_Misc_Book_09
+## SavedVariables: BlackacreDB, InCharacterDB, BlackacreAceDB, BlackacreProfiles
+## SavedVariablesPerCharacter: BlackacreCharDB, InCharacterCharDB
+## LoadSavedVariablesFirst: 1
+## Category-enUS: Roleplay
+## X-Website: https://github.com/khallammarellus-rgb/blackacre-in-character-forever
+## X-Curse-Project-ID: 0
+
+embeds.xml
+
+Locales\enUS.lua
+
+Core\Compat.lua
+Core\Init.lua
+Core\Languages.lua
+Core\Boons.lua
+Data\Blocklist.lua
+Core\ProfanityFilter.lua
+Core\Comms.lua
+Core\Lifecycle.lua
+Core\ProfileBackup.lua
+Core\Options.lua
+History\History.lua
+UI\Theme.lua
+UI\ToolBox.lua
+UI\BugReport.lua
+UI\MinimapButton.lua

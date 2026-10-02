@@ -1,0 +1,29 @@
+# Only the add-on ships from this repo. Everything is ignored unless it is
+# listed here, so notes and docs can't be committed by accident.
+/*
+!/.gitignore
+!/.pkgmeta
+!/README.md
+!/LICENSE
+!/LICENSE.*
+!/Blackacre/
+!/Blackacre_Tome/
+!/Blackacre_Survival/
+!/Blackacre_Presence/
+!/docs/
+
+# The one public doc is the QA guide; no other notes anywhere (library files
+# are kept whole).
+/docs/*
+*.md
+!/README.md
+!/docs/QA-TESTING-GUIDE.md
+!/Blackacre/Libs/**
+AGENTS.md
+CLAUDE.md
+
+# Editor and OS junk
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak

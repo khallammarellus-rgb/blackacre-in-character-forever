@@ -1,0 +1,34 @@
+Fonts bundled with In Character Forever
+=======================================
+
+These fonts are not covered by the add-on's MIT license. Each belongs to its
+designer and is included unmodified, under the free terms its designer
+publishes. Thank you to every designer below.
+
+Dwarven Stonecraft (DWARVESC.TTF)
+    Copyright rzy/SD (SDFonts), 2000. Free for personal and commercial use.
+
+Freebooter (FREEBOOTERUPDATED.TTF)
+    Copyright GemFonts (Graham Meade), 1998. Free for personal and commercial use.
+
+Monarchia (MONARCHI.TTF)
+    Petra; compiled by GemFonts (Graham Meade). Free for personal and commercial use.
+
+Magic School One (MagicSchoolOne-ovYz.ttf)
+    Copyright (c) 2004 Michael Hagemann, FontMesa (www.fontmesa.com).
+    Free for personal and commercial use.
+
+Burning Wrath (b_wrath.ttf)
+    By T. Lyle (rubicant.com). Released as free.
+
+Darnassian Runes (DarnassianRunes-Regular_2.ttf)
+Thalassian (Thalassian_Font.ttf)
+Shalassian (ShalassianFont-Regular.ttf)
+    By Feyawen, Warcraft Fonts (warcraftfonts.carrd.co), an unofficial fan
+    project. Darnassian Runes is published as 100% free.
+
+The journal's other font choices (Friz, Morpheus, Skurri and the default)
+use the copies that come with World of Warcraft itself; none are bundled.
+
+If you designed one of these fonts and want it credited differently or
+removed, please open an issue on the project's GitHub page.
