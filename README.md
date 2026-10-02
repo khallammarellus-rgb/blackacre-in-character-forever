@@ -1,7 +1,6 @@
 # In Character Forever
 
-This is the **WoW Forever** edition of [Blackacre: In Character](https://github.com/khallammarellus-rgb/blackacre-in-character) Designed to be a journal and RPG enhancing add on for WoW roleplay. This is the foundational add on for its extensions
-A WoW add-on for in-character, immersive roleplay.
+This is the **WoW Forever** edition of [Blackacre: In Character](https://github.com/khallammarellus-rgb/blackacre-in-character) Designed to be a journal and RPG enhancing add on for WoW roleplay. This is the foundational base add on for planned extensions.
 
 **Version:** 2.0.0-dev
 **Target:** WoW Forever
