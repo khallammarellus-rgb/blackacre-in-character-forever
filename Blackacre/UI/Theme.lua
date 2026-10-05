@@ -16,7 +16,7 @@ Blackacre.UI.Theme.Layer = {
 function Blackacre.UI.Theme.CreateLayeredFontString(frame, layer, inherits)
     if not frame then return nil end
     layer = layer or Blackacre.UI.Theme.Layer.OVERLAY
-    return frame:CreateFontString(nil, layer, inherits or "GameFontHighlight")
+    return frame:CreateFontString(nil, layer, inherits or "BlackacreFont_GameFontHighlight")
 end
 
 Blackacre.UI.Theme.Colors = {
@@ -407,20 +407,32 @@ local WOW_SKURRI = "Fonts\\skurri.ttf"
 Blackacre.UI.Theme.Fonts = {
     catalog = {
         { key = "default", path = nil, name = "Default (WoW mail)", full = true },
-        { key = "frizGame", path = WOW_FRIZ, name = "Friz (game)", full = true },
-        { key = "frizCyr", path = WOW_FRIZ_CYR, name = "Friz Cyrillic (game)", full = true },
-        { key = "morpheusGame", path = WOW_MORPHEUS, name = "Morpheus (game)", full = true },
-        { key = "skurri", path = WOW_SKURRI, name = "Skurri (game)", full = true },
+        { key = "frizGame", path = WOW_FRIZ, name = "Friz (native)", full = true },
+        { key = "frizCyr", path = WOW_FRIZ_CYR, name = "Friz Cyrillic (native)", full = true },
+        { key = "morpheusGame", path = WOW_MORPHEUS, name = "Morpheus (native)", full = true },
+        { key = "skurri", path = WOW_SKURRI, name = "Skurri (native)", full = true },
         -- Bundled fonts: only ones whose designers allow redistribution.
         -- Credits and license notes: Media/Fonts/FONTS.txt.
-        { key = "dwarven", path = FONT .. "DWARVESC.TTF", name = "Dwarven SC", full = false },
         { key = "freebooter", path = FONT .. "FREEBOOTERUPDATED.TTF", name = "Freebooter", full = false },
         { key = "magicSchool", path = FONT .. "MagicSchoolOne-ovYz.ttf", name = "Magic School", full = false },
-        { key = "monarch", path = FONT .. "MONARCHI.TTF", name = "Monarch", full = false },
-        { key = "thalassian", path = FONT .. "Thalassian_Font.ttf", name = "Thalassian", full = false },
-        { key = "darnassian", path = FONT .. "DarnassianRunes-Regular_2.ttf", name = "Darnassian Runes", full = false },
-        { key = "shalassian", path = FONT .. "ShalassianFont-Regular.ttf", name = "Shalassian", full = false },
-        { key = "wrath", path = FONT .. "b_wrath.ttf", name = "Wrath", full = false },
+        -- sizeScale / spacing: journal size multiplier and extra px between lines
+        -- (ApplyReadableBodyFont). WoW draws only the top ~1 em of each glyph, so the traced
+        -- fonts are built shrunk to fit inside 1 em and sizeScale brings them back up; that
+        -- also sets the line spacing (scripts/fonts/build_font.py prints the factor).
+        { key = "khaz", path = FONT .. "BlackacreKhaz.ttf", name = "Khaz", full = false,
+          sizeScale = 1.111 },
+        { key = "highborne", path = FONT .. "BlackacreHighborne.ttf", name = "Highborne", full = false,
+          sizeScale = 1.662 },
+        { key = "highborneText", path = FONT .. "BlackacreHighborneText.ttf", name = "Highborne Text", full = false,
+          sizeScale = 1.662 },
+        { key = "oldGilnean", path = FONT .. "BlackacreOldGilnean.ttf", name = "Old Gilnean", full = false,
+          sizeScale = 1.111, spacing = 2 },
+        { key = "learnedHand", path = FONT .. "BlackacreLearnedHand.ttf", name = "Learned Hand", full = false,
+          sizeScale = 1.662 },
+        { key = "peon", path = FONT .. "BlackacrePeon.ttf", name = "Peon", full = false,
+          sizeScale = 1.913 },
+        { key = "tolvir", path = FONT .. "BlackacreTolvir.ttf", name = "Tol'vir", full = false,
+          sizeScale = 1.45, spacing = 2 },
     },
     activeKey = "default",
     activeBody = nil,
@@ -504,14 +516,49 @@ local function RefreshOpenTome()
     end
 end
 
--- Fonts that are no longer bundled (no redistribution license). A saved
--- choice moves to the game's own copy of the same face, so pages look the same.
-local RETIRED_FONT_KEYS = { friz = "frizGame", morpheus = "morpheusGame" }
+-- Fonts that are no longer bundled. A saved choice moves to the closest face we still have:
+-- Friz/Morpheus to the game's own copy (no redistribution license, 2026-10-02); the rune,
+-- Dwarven SC, Monarch and Wrath faces (missing digits/marks, and their licenses don't allow
+-- adding them, 2026-10-05) to the nearest Blackacre font.
+local RETIRED_FONT_KEYS = {
+    friz = "frizGame", morpheus = "morpheusGame",
+    dwarven = "khaz", darnassian = "highborneText", thalassian = "highborneText",
+    shalassian = "highborneText", monarch = "learnedHand", wrath = "oldGilnean",
+}
+
+-- "By race": the journal font a character starts with, by UnitRace file token. A profile
+-- keeps "race" until the player picks a font; every lookup resolves it here.
+local RACE_JOURNAL_FONT = {
+    Human = "learnedHand", Dwarf = "khaz", Gnome = "magicSchool",
+    NightElf = "highborneText", Skyborne = "highborneText", Troll = "highborneText",
+    Orc = "peon", Tauren = "tolvir", Scourge = "oldGilnean",
+}
+Blackacre.UI.Theme.RACE_FONT_KEY = "race"
+
+--- The font key "By race" means for this character ("default" for an unlisted race).
+function Blackacre.UI.Theme.RaceJournalFontKey()
+    local _, raceFile = UnitRace("player")
+    return RACE_JOURNAL_FONT[raceFile] or "default"
+end
+
+--- Catalog row for a font key, or nil.
+local function CatalogRow(key)
+    key = RETIRED_FONT_KEYS[key] or key
+    for _, row in ipairs(Blackacre.UI.Theme.Fonts.catalog or {}) do
+        if row.key == key then return row end
+    end
+    return nil
+end
 
 --- Apply body font key (tome body + sticky notes only). Persists to AceDB when available.
 function Blackacre.UI.Theme.SetBodyFontKey(key, silent)
     local fonts = Blackacre.UI.Theme.Fonts
     key = RETIRED_FONT_KEYS[key] or key or "default"
+    -- Persist the player's choice ("race" stays "race"); draw with what it resolves to.
+    local choice = key
+    if key == Blackacre.UI.Theme.RACE_FONT_KEY then
+        key = Blackacre.UI.Theme.RaceJournalFontKey()
+    end
     local path = nil
     local found = false
     for _, row in ipairs(fonts.catalog or {}) do
@@ -540,12 +587,54 @@ function Blackacre.UI.Theme.SetBodyFontKey(key, silent)
     fonts.activeKey = key
     fonts.activeBody = path
     local settings = Blackacre.GetProfileSettings and Blackacre.GetProfileSettings()
-    if settings then settings.bodyFontKey = key end
+    if settings then settings.bodyFontKey = choice end
     if not silent and Blackacre.Print then
         Blackacre.Print("Tome Font Enabled: " .. tostring(label))
     end
     RefreshOpenTome()
+    -- Lay out once more after the face has surely loaded (see PreloadCatalogFonts).
+    C_Timer.After(0.5, RefreshOpenTome)
     return true
+end
+
+-- Add-on text styles: copies of WoW's text styles that every add-on label uses instead of
+-- the originals, so the "Add-on Text Font" setting restyles add-on windows without touching
+-- buttons, other add-ons or the game, which keep the originals. They're named globals
+-- (BlackacreFont_<WoW style>) because CreateFontString takes its template by name.
+local ADDON_FONT_TEMPLATES = {
+    "GameFontNormal", "GameFontNormalSmall", "GameFontNormalLarge", "GameFontNormalHuge",
+    "GameFontHighlight", "GameFontHighlightSmall", "GameFontHighlightLarge", "GameFontDisableSmall",
+    "QuestTitleFont", "QuestFont", "QuestFontNormalSmall",
+}
+local addonFonts = {}
+for _, name in ipairs(ADDON_FONT_TEMPLATES) do
+    local base = _G[name]
+    if base then
+        local obj = CreateFont("BlackacreFont_" .. name)
+        obj:CopyFontObject(base)
+        addonFonts[name] = obj
+    end
+end
+
+--- Restyle add-on text with a catalog font ("default" = WoW's own). Labels pick it up at
+--- once: a FontString follows its font object. Sizes keep WoW's, times the row's sizeScale.
+function Blackacre.UI.Theme.SetAddonFontKey(key)
+    key = RETIRED_FONT_KEYS[key] or key or "default"
+    local row = CatalogRow(key)
+    local path = row and row.path
+    if path and not Blackacre.UI.Theme.ProbeBodyFont(path) then
+        path, key = nil, "default"
+    end
+    for name, obj in pairs(addonFonts) do
+        local base = _G[name]
+        obj:CopyFontObject(base)
+        if path then
+            local _, size, flags = base:GetFont()
+            obj:SetFont(path, (size or 12) * (row.sizeScale or 1), flags or "")
+        end
+    end
+    local settings = Blackacre.GetProfileSettings and Blackacre.GetProfileSettings()
+    if settings then settings.addonFontKey = key end
 end
 
 --- Font path for one catalog key (nil for "default" = WoW mail font).
@@ -559,9 +648,33 @@ function Blackacre.UI.Theme.GetBodyFontPathForKey(key)
     return nil
 end
 
+-- WoW reads a font file the first time something uses it. One-line text set while it is
+-- still loading can come out blank (Highborne's table of contents and meta line after a
+-- restart, 2026-10-04), so every bundled face is loaded once at login, off screen.
+local fontPreloadHost
+
+function Blackacre.UI.Theme.PreloadCatalogFonts()
+    if fontPreloadHost then return end
+    fontPreloadHost = CreateFrame("Frame", nil, UIParent)
+    fontPreloadHost:SetSize(1, 1)
+    fontPreloadHost:SetPoint("BOTTOMLEFT", UIParent, "TOPLEFT", 0, 100)
+    fontPreloadHost:SetAlpha(0)
+    for _, row in ipairs(Blackacre.UI.Theme.Fonts.catalog or {}) do
+        if row.path then
+            local fs = fontPreloadHost:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            if TrySetFont(fs, row.path, 14) then
+                fs:SetPoint("TOPLEFT")
+                fs:SetText("Aa")
+            end
+        end
+    end
+end
+
 function Blackacre.UI.Theme.LoadBodyFontFromDB(silent)
+    Blackacre.UI.Theme.PreloadCatalogFonts()
     local key = "default"
     local settings = Blackacre.GetProfileSettings and Blackacre.GetProfileSettings()
+    Blackacre.UI.Theme.SetAddonFontKey(settings and settings.addonFontKey)
     if settings and settings.bodyFontKey then key = settings.bodyFontKey end
     -- Announce after /reload when a non-default face is saved.
     Blackacre.UI.Theme.SetBodyFontKey(key, silent or key == "default")
@@ -648,7 +761,7 @@ function Blackacre.UI.Theme.CreateBookShell(name, titleText)
     Blackacre.UI.Theme.ApplyBookChromeBar(frame.header, "header")
     frame.header:SetFrameLevel((frame:GetFrameLevel() or 1) + 30)
 
-    frame.title = Blackacre.UI.Theme.CreateLayeredFontString(frame.header, Layer.OVERLAY, "GameFontNormalHuge")
+    frame.title = Blackacre.UI.Theme.CreateLayeredFontString(frame.header, Layer.OVERLAY, "BlackacreFont_GameFontNormalHuge")
     frame.title:SetPoint("LEFT", 14, 0)
     frame.title:SetJustifyH("LEFT")
     if frame.title.SetWordWrap then frame.title:SetWordWrap(false) end
@@ -763,7 +876,7 @@ function Blackacre.UI.Theme.CreateBookShell(name, titleText)
     frame.pageJumpBtn:SetSize(36, 24)
     frame.pageJumpBtn:SetPoint("RIGHT", frame.backstoryBtn, "LEFT", -6, 0)
 
-    frame.pageJumpOf = frame.footer:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    frame.pageJumpOf = frame.footer:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalSmall")
     frame.pageJumpOf:SetPoint("RIGHT", frame.pageJumpBtn, "LEFT", -4, 0)
     frame.pageJumpOf:SetText("of 1")
 
@@ -949,7 +1062,7 @@ function Blackacre.UI.Theme.CreateBookShell(name, titleText)
         holder:SetSize(36, 22)
         holder:SetPoint(anchorPoint, relTo, relPoint, ox, oy)
         holder:SetFrameLevel((frame.bookOpen:GetFrameLevel() or 1) + 7)
-        local fs = holder:CreateFontString(nil, Layer.OVERLAY, "GameFontNormal")
+        local fs = holder:CreateFontString(nil, Layer.OVERLAY, "BlackacreFont_GameFontNormal")
         fs:SetPoint("CENTER", 0, 0)
         local ink = Blackacre.UI.Theme.Colors.ink
         fs:SetTextColor(ink[1], ink[2], ink[3], 1)
@@ -1013,18 +1126,18 @@ function Blackacre.UI.Theme.InkFont(fontString, size)
     if not fontString then return end
     local c = Blackacre.UI.Theme.Colors.ink
     if size == "title" then
-        fontString:SetFontObject(GameFontNormalHuge or GameFontNormalLarge)
+        fontString:SetFontObject(BlackacreFont_GameFontNormalHuge or BlackacreFont_GameFontNormalLarge)
     elseif size == "header" then
-        fontString:SetFontObject(GameFontNormalLarge)
+        fontString:SetFontObject(BlackacreFont_GameFontNormalLarge)
     else
-        fontString:SetFontObject(GameFontHighlightLarge or GameFontHighlight)
+        fontString:SetFontObject(BlackacreFont_GameFontHighlightLarge or BlackacreFont_GameFontHighlight)
     end
     fontString:SetTextColor(c[1], c[2], c[3])
 end
 
 function Blackacre.UI.Theme.GoldTitle(fontString)
     if not fontString then return end
-    fontString:SetFontObject(GameFontNormalHuge or GameFontNormalLarge)
+    fontString:SetFontObject(BlackacreFont_GameFontNormalHuge or BlackacreFont_GameFontNormalLarge)
     local g = Blackacre.UI.Theme.Colors.gold
     fontString:SetTextColor(g[1], g[2], g[3])
 end
@@ -1158,16 +1271,25 @@ function Blackacre.UI.Theme.ApplyReadableBodyFont(region, extraSize, fontKey)
     else
         custom = Blackacre.UI.Theme.GetBodyFontPath and Blackacre.UI.Theme.GetBodyFontPath()
     end
-    local applied = false
+    local row = CatalogRow(fontKey or Blackacre.UI.Theme.Fonts.activeKey)
+    local applied, spacing = false, 0
     if custom then
-        applied = TrySetFont(region, custom, size)
-        -- If fancy font failed to load entirely, fall back to game Friz (full charset)
-        if not applied then
+        -- sizeScale: a face that runs small (a script) is drawn larger than the plain fonts
+        applied = TrySetFont(region, custom, size * (row and row.sizeScale or 1))
+        if applied then
+            spacing = row and row.spacing or 0
+        else
+            -- If fancy font failed to load entirely, fall back to game Friz (full charset)
             applied = TrySetFont(region, WOW_FRIZ, size)
         end
     end
     if not applied then
         Blackacre.UI.Theme.ApplyMailBodyFont(region, extraSize)
+    end
+    -- WoW spaces lines by font size alone, so a face with tall stems and long tails needs
+    -- extra room; 0 resets it when the page switches back to a plain font.
+    if region.SetSpacing then
+        region:SetSpacing(spacing)
     end
     -- Graphite pencil-lead (titles use GoldTitle separately — not this)
     local c = Blackacre.UI.Theme.Colors.ink
@@ -2783,7 +2905,7 @@ local function EnsureToastFrame()
     f.fx:SetAllPoints()
     if f.fx.SetBlendMode then f.fx:SetBlendMode("ADD") end
     f.fx:Hide()
-    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    f.title = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalLarge")
     f.title:SetPoint("LEFT", 48, 2)
     f.title:SetPoint("RIGHT", -48, 2)
     f.title:SetJustifyH("CENTER")
@@ -2885,7 +3007,7 @@ function Blackacre.UI.Theme.EnsureToastSkinGuide(shown)
         ov:EnableMouse(false)
         f._baSkinGuide = ov
         local function Tag(anchor, label, kind)
-            local fs = ov:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+            local fs = ov:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalHuge")
             fs:SetPoint("CENTER", anchor, "CENTER", 0, 0)
             fs:SetText((kind == "S" and "|cffffcc00" or "|cffffffff") .. label .. (kind == "S" and "S|r" or "F|r"))
             fs:SetShadowColor(0, 0, 0, 1)
@@ -2916,7 +3038,7 @@ local function MakeSkinTag(e)
     holder:SetFrameStrata("DIALOG")
     holder:SetFrameLevel((owner:GetFrameLevel() or 1) + 80)
     holder:EnableMouse(false)
-    local fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    local fs = holder:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalHuge")
     fs:SetPoint("CENTER", holder, "CENTER", e.ox or 0, e.oy or 0)
     fs:SetText((e.kind == "S" and "|cffffcc00" or "|cffffffff") .. e.code .. e.kind .. "|r")
     fs:SetShadowColor(0, 0, 0, 1)
@@ -2956,7 +3078,7 @@ local function EnsureBackstorySkinGuide(shown)
         menu._baSkinGuide = mOverlay
         local function MTag(anchor, label, kind, ox, oy)
             if not anchor then return end
-            local fs = mOverlay:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+            local fs = mOverlay:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalHuge")
             fs:SetPoint("CENTER", anchor, "CENTER", ox or 0, oy or 0)
             if kind == "S" then
                 fs:SetText("|cffffcc00" .. label .. "S|r")
@@ -2980,7 +3102,7 @@ local function EnsureBackstorySkinGuide(shown)
     if shown and lin and ov and not menu._baLinTags then
         local function LTag(anchor, label, ox, oy)
             if not anchor then return end
-            local fs = ov:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+            local fs = ov:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalHuge")
             fs:SetPoint("CENTER", anchor, "CENTER", ox or 0, oy or 0)
             fs:SetText("|cffffffff" .. label .. "F|r")
             fs:SetShadowColor(0, 0, 0, 1)
@@ -3024,7 +3146,7 @@ function Blackacre.UI.Theme.ToggleTomeSkinGuide()
 
     -- Gold = skin (art pack). White = function (layout/clicks; same on every skin).
     local function Tag(anchor, label, kind, ox, oy)
-        local fs = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+        local fs = overlay:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalHuge")
         fs:SetPoint("CENTER", anchor, "CENTER", ox or 0, oy or 0)
         if kind == "S" then
             fs:SetText("|cffffcc00" .. label .. "S|r")
@@ -3036,7 +3158,7 @@ function Blackacre.UI.Theme.ToggleTomeSkinGuide()
         return fs
     end
 
-    local legend = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local legend = overlay:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormal")
     legend:SetPoint("TOP", overlay, "TOP", 0, -4)
     legend:SetText("|cffffcc00#S skin (art)|r   |cffffffff#F function (clicks/layout)|r")
 

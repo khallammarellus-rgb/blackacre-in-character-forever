@@ -89,7 +89,7 @@ local function EnsureWindow()
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
     f.TitleText:SetText("Blackacre Bug / Feedback Report")
 
-    local hint = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    local hint = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlightSmall")
     hint:SetPoint("TOPLEFT", 16, -30)
     hint:SetWidth(428)
     hint:SetJustifyH("LEFT")
@@ -121,7 +121,7 @@ local function EnsureWindow()
     scroll:SetScrollChild(edit)
     f.edit = edit
 
-    local copyHint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    local copyHint = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontDisableSmall")
     copyHint:SetPoint("BOTTOMLEFT", 16, 14)
     copyHint:SetText("Nothing is sent automatically — copy and paste it yourself.")
 

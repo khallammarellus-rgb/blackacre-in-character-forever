@@ -131,7 +131,8 @@ local function CurrentDayMonth()
     return day, name
 end
 
-local function DefaultManualPage()
+--- `yearADP` (optional): the year the page is set in; nil = the character's present year.
+local function DefaultManualPage(yearADP)
     local zone = Blackacre.GetZoneContext()
     local zoneName = zone.zoneName ~= "" and zone.zoneName or nil
     local sub = zone.subzone ~= "" and zone.subzone ~= zoneName and zone.subzone or nil
@@ -148,7 +149,7 @@ local function DefaultManualPage()
     -- "I set these words down this evening, the 26th of September, in
     --  Goldshire, Elwynn Forest, in the year 32 K.C."
     local place = (sub and zoneName) and (sub .. ", " .. zoneName) or zoneName or sub
-    local year = Blackacre.UI.Theme.FormatFactionYear(Blackacre.YearCalendar.GetPresentADP())
+    local year = Blackacre.UI.Theme.FormatFactionYear(yearADP or Blackacre.YearCalendar.GetPresentADP())
     local line = "I set these words down"
     if tod then line = line .. " " .. TOD_PHRASE[tod] end
     if day then line = line .. ", the " .. Ordinal(day) .. " of " .. month end
@@ -159,13 +160,15 @@ end
 
 --- A blank page written now. `storyAt` (optional) places it earlier in the
 --- book's chronology, e.g. right after the page the player is reading.
+--- `yearKC` (optional, an ADP year despite the field's name) is the year the page is set
+--- in, for writing up past events; nil = the present year.
 function Blackacre.Chronicle.Capture.AddManual(title, body, kind, storyAt, yearKC)
     kind = kind or "MANUAL"
     if title == nil and body == nil and kind == "MANUAL" then
-        title, body = DefaultManualPage()
+        title, body = DefaultManualPage(yearKC)
     end
     local facts = { manualTitle = title, manualBody = body, title = title, body = body }
-    if not storyAt then
+    if not storyAt and not yearKC then
         return MakeEntry(kind, facts, "manual")
     end
     local context = Blackacre.Chronicle.Hooks.GetContext()

@@ -21,6 +21,21 @@ local function GetProfileSettings()
     return Blackacre.GetProfileSettings and Blackacre.GetProfileSettings() or nil
 end
 
+--- key -> name for every font in Theme's catalog (both font menus list the same faces).
+local function FontChoices()
+    local t = {}
+    local cat = Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.GetBodyFontCatalog
+        and Blackacre.UI.Theme.GetBodyFontCatalog()
+        or {}
+    for _, row in ipairs(cat) do
+        t[row.key] = row.name
+    end
+    if not next(t) then
+        t.default = "Default (WoW mail)"
+    end
+    return t
+end
+
 local function CharSettings()
     Blackacre.CharDB = Blackacre.CharDB or {}
     Blackacre.CharDB.settings = Blackacre.CharDB.settings or {}
@@ -238,19 +253,14 @@ local function BuildOptions()
                     },
                     bodyFont = {
                         type = "select",
-                        name = "Journal Fonts",
-                        desc = "Only affects editable text and main headers",
+                        name = "Journal Font",
+                        desc = "The handwriting on journal pages, the table of contents and sticky notes. \"By race\" uses your race's script.",
                         order = 4,
                         values = function()
-                            local t = {}
-                            local cat = Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.GetBodyFontCatalog
-                                and Blackacre.UI.Theme.GetBodyFontCatalog()
-                                or {}
-                            for _, row in ipairs(cat) do
-                                t[row.key] = row.name
-                            end
-                            if not next(t) then
-                                t.default = "Default (WoW mail)"
+                            local t = FontChoices()
+                            local th = Blackacre.UI and Blackacre.UI.Theme
+                            if th and th.RaceJournalFontKey then
+                                t[th.RACE_FONT_KEY] = "By race (" .. (t[th.RaceJournalFontKey()] or "Default") .. ")"
                             end
                             return t
                         end,
@@ -269,6 +279,24 @@ local function BuildOptions()
                                 Blackacre.UI.Theme.SetBodyFontKey(key, false)
                             elseif GetProfileSettings() then
                                 GetProfileSettings().bodyFontKey = key
+                            end
+                        end,
+                    },
+                    addonFont = {
+                        type = "select",
+                        name = "Add-on Text Font",
+                        desc = "Titles, headings and labels in In Character windows. Buttons and typing boxes keep the game's font.",
+                        order = 4.5,
+                        values = FontChoices,
+                        get = function()
+                            local p = GetProfileSettings()
+                            return p and p.addonFontKey or "default"
+                        end,
+                        set = function(_, key)
+                            if Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.SetAddonFontKey then
+                                Blackacre.UI.Theme.SetAddonFontKey(key)
+                            elseif GetProfileSettings() then
+                                GetProfileSettings().addonFontKey = key
                             end
                         end,
                     },

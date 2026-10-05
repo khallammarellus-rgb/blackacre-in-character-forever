@@ -126,6 +126,24 @@ function Blackacre.Chronicle.Store.StoryTimeAfter(entry)
     return here + 1
 end
 
+--- A story time that sorts right before `entry` and after whatever page precedes it in
+--- the book, so a new page takes `entry`'s place and `entry` moves one page on.
+function Blackacre.Chronicle.Store.StoryTimeBefore(entry)
+    local here = StoryTime(entry)
+    local prevAt
+    for _, e in ipairs(EnsureDB().entries) do
+        local t = StoryTime(e)
+        if e ~= entry and Blackacre.Chronicle.Store.IsBookKind(e.kind) and t < here
+            and (not prevAt or t > prevAt) then
+            prevAt = t
+        end
+    end
+    if prevAt then
+        return prevAt + (here - prevAt) / 2
+    end
+    return here - 1
+end
+
 function Blackacre.Chronicle.Store.Update(id, fields)
     local entry = Blackacre.Chronicle.Store.GetById(id)
     if not entry then return nil end

@@ -183,7 +183,8 @@ local function DefaultProfile()
     return {
         minimap = { hide = false },
         quietNotifications = false,
-        bodyFontKey = "default",
+        bodyFontKey = "race",       -- journal font: "race" = by the character's race (Theme)
+        addonFontKey = "default",   -- add-on window text: "default" = WoW's own fonts
         chromeSkin = "auto",
         voice = DefaultVoice(),
         characterData = DefaultCharDB(),
@@ -287,7 +288,8 @@ local function EnsureActiveProfile()
     profile.minimap = profile.minimap or { hide = false }
     if profile.minimap.hide == nil then profile.minimap.hide = false end
     if profile.quietNotifications == nil then profile.quietNotifications = false end
-    if profile.bodyFontKey == nil then profile.bodyFontKey = "default" end
+    if profile.bodyFontKey == nil then profile.bodyFontKey = "race" end
+    if profile.addonFontKey == nil then profile.addonFontKey = "default" end
     if profile.chromeSkin == nil then profile.chromeSkin = "auto" end
     profile.voice = profile.voice or DefaultVoice()
     profile.characterData = profile.characterData or DefaultCharDB()

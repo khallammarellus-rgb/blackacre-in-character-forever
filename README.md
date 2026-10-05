@@ -49,6 +49,8 @@ World of Warcraft © Blizzard Entertainment. This is a fan add-on, not affiliate
 
 The add-on's own code and text are released under the [MIT License](LICENSE). That covers only this project's work: Warcraft names and lore belong to Blizzard, and the bundled libraries and fonts keep their own licenses (see `Blackacre/Libs/LICENSES.txt` and `Blackacre/Media/Fonts/FONTS.txt`).
 
+The Blackacre fonts made for this add-on (Khaz, Highborne, Highborne Text, Old Gilnean, Learned Hand, Peon and Tol'vir, the `Blackacre*.ttf` files in `Blackacre/Media/Fonts/`) are dedicated to the public domain under [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/). Anyone may use, change and redistribute them for any purpose, including commercial work, without asking and without giving credit.
+
 Found a bug? Open an issue on this repository. The in-game report window (Shift+Right-click the minimap button) fills in the details for you.
 
 ## Credits

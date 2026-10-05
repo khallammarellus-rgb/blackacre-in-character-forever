@@ -23,6 +23,7 @@ Chronicle\Hooks.lua
 Chronicle\Prompt.lua
 Chronicle\Capture.lua
 Chronicle\UI_Chronology.lua
+Chronicle\UI_Stickies.lua
 
 Quests\QuestLog.lua
 Quests\UI_QuestIndex.lua

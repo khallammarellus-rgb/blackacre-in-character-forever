@@ -3,12 +3,14 @@
 Blackacre = Blackacre or {}
 Blackacre.Chronicle = Blackacre.Chronicle or {}
 Blackacre.Chronicle.UI = {}
+Blackacre.Chronicle.Book = {}
 
 local type, ipairs, next, tostring, tonumber = type, ipairs, next, tostring, tonumber
 local time, wipe = time, wipe
 local GetTime, C_Timer = GetTime, C_Timer
 local IsControlKeyDown, IsShiftKeyDown = IsControlKeyDown, IsShiftKeyDown
 local CreateFrame, UIParent = CreateFrame, UIParent
+local Book = Blackacre.Chronicle.Book
 
 local journal
 local oldestFirst = true
@@ -161,21 +163,76 @@ local function ByStoryOrder(a, b)
     return (a.entry.createdAt or 0) < (b.entry.createdAt or 0)
 end
 
---- Bookmarked slots: one "Bookmarked" heading, entries in story order
---- (not reshuffled when bookmarked), then a divider before the
+-- Bookmarks are per page: entry.bookmarks lists which of the entry's own pages carry one
+-- (1 = its first page). entry.pinned stays "some page is bookmarked"; older saves have only
+-- that flag, which meant the first page. A bookmark past the entry's last page (the text got
+-- shorter) shows on its last page.
+local BOOKMARK_FIRST = { 1 }
+local EntryPageRanges -- defined with the page splitter below
+
+-- Does bookmark `p` sit on page `part` of `lastPart`?
+local function BookmarkOnPage(p, part, lastPart)
+    return p == part or (part == lastPart and p > lastPart)
+end
+
+function Book.IsPageBookmarked(entry, part, lastPart)
+    local list = entry.bookmarks or (entry.pinned and BOOKMARK_FIRST)
+    if not list or not part or not lastPart then return false end
+    for i = 1, #list do
+        if BookmarkOnPage(list[i], part, lastPart) then return true end
+    end
+    return false
+end
+
+--- Bookmark or un-bookmark one page of an entry (`part` of its `lastPart` pages).
+function Book.ToggleBookmark(entry, part, lastPart)
+    local was = Book.IsPageBookmarked(entry, part, lastPart)
+    local old = entry.bookmarks or (entry.pinned and BOOKMARK_FIRST)
+    local list = {}
+    if old then
+        for i = 1, #old do
+            if not BookmarkOnPage(old[i], part, lastPart) then list[#list + 1] = old[i] end
+        end
+    end
+    if not was then
+        list[#list + 1] = part
+        table.sort(list)
+    end
+    entry.bookmarks, entry.pinned = list, #list > 0
+    Blackacre.Chronicle.Store.Update(entry.id, { bookmarks = list, pinned = entry.pinned })
+    if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
+    if Blackacre.Print then
+        Blackacre.Print(was and "Bookmark removed" or "Page bookmarked")
+    end
+    Blackacre.Chronicle.UI.RenderSpread()
+end
+
+local function ByBookmarkOrder(a, b)
+    if a.entry ~= b.entry then return ByStoryOrder(a, b) end
+    return a.part < b.part
+end
+
+--- Bookmarked slots: one "Bookmarked" heading, one line per bookmarked page in
+--- story order (not reshuffled when bookmarked), then a divider before the
 --- standard year-grouped TOC. Bookmarked entries still appear again in their
 --- own year section below -- this is a quick-jump list, not a second inbox.
 local function BuildBookmarkedSlots(list)
     local bookmarked = {}
     for j = 1, #list do
-        if list[j].pinned then
-            bookmarked[#bookmarked + 1] = { kind = "entry", entry = list[j], listIndex = j }
+        local e = list[j]
+        if e.bookmarks or e.pinned then
+            local lastPart = #EntryPageRanges(e, e.body or "") / 2
+            for part = 1, lastPart do
+                if Book.IsPageBookmarked(e, part, lastPart) then
+                    bookmarked[#bookmarked + 1] = { kind = "entry", entry = e, listIndex = j, part = part }
+                end
+            end
         end
     end
     if #bookmarked == 0 then
         return nil
     end
-    table.sort(bookmarked, ByStoryOrder)
+    table.sort(bookmarked, ByBookmarkOrder)
     local slots = { { kind = "year", label = "Bookmarked", yearKey = "__bookmarked__" } }
     for _, row in ipairs(bookmarked) do
         slots[#slots + 1] = row
@@ -224,27 +281,98 @@ end
 --- Open-book model: leaf = physical page; spread = left+right; flip = one spread.
 --- Entry: title+meta+body on same leaf; long entries continue onto as many leaves as needed.
 
+-- Entry leaf layout, top to bottom (RenderEntryLeaf draws it, the page splitter measures it):
+-- LEAF.TOP, then title (LEAF.TITLE_H) + meta line (LEAF.META_H) on an entry's first leaf or
+-- "(continued)" (LEAF.CONT_H) after it, then the body box down to LEAF.BODY_BOTTOM above the leaf's
+-- foot. The body EditBox is LEAF.BODY_TRIM narrower than the leaf, with LEAF.BODY_INSET text insets.
+-- One table, not seven locals: this file sits at Lua's 200-local limit.
+local LEAF = { TOP = 14, TITLE_H = 30, META_H = 36, CONT_H = 18, BODY_BOTTOM = 44, BODY_TRIM = 28, BODY_INSET = 4 }
+
+-- Page breaks are measured, not counted: a hidden FontString as wide as the page's text,
+-- in the page's own font, size and line spacing, finds the last whole word that fits.
+-- A fixed character count overflowed every font (the default one too), and a big script
+-- face lost several lines off the bottom of the page.
+local measureFS
+local splitCache = setmetatable({}, { __mode = "k" })   -- entry -> last split and its inputs
+
+--- The measuring FontString set up for this entry's font, plus the leaf size; nil while
+--- the book has no size yet (then the character count is the fallback).
+local function PrepareMeasure(entry)
+    local host = journal and journal.leftHost
+    local w, h = host and host:GetWidth(), host and host:GetHeight()
+    if not w or w < 50 or not h or h < 100 then return nil end
+    if not measureFS then
+        -- Shown but invisible and off screen, so the client lays the text out.
+        local f = CreateFrame("Frame", nil, UIParent)
+        f:SetSize(1, 1)
+        f:SetPoint("BOTTOMLEFT", UIParent, "TOPLEFT", 0, 200)
+        f:SetAlpha(0)
+        measureFS = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        measureFS:SetPoint("TOPLEFT")
+        measureFS:SetJustifyH("LEFT")
+        measureFS:SetWordWrap(true)
+        if measureFS.SetNonSpaceWrap then measureFS:SetNonSpaceWrap(true) end
+    end
+    measureFS:SetWidth(math.max(180, w - LEAF.BODY_TRIM) - 2 * LEAF.BODY_INSET)
+    Blackacre.UI.Theme.ApplyReadableBodyFont(measureFS, 2 + (entry.fontSizeOffset or 0), entry.fontKey)
+    return measureFS, w, h
+end
+
+local function TextFits(fs, text, avail)
+    local sanitize = Blackacre.UI.Theme.SanitizeBodyText
+    fs:SetText(sanitize and sanitize(text) or text)
+    return (fs:GetStringHeight() or 0) <= avail
+end
+
 --- Fills `out` with the byte range of each leaf's slice of `body` as
 --- start1, end1, start2, end2, ...  No leaf limit: long-form entries run
 --- onto as many leaves as they need.  Editors save by splicing their slice
 --- back into the full body at these offsets, so a leaf never overwrites
 --- text it is not showing.  Whitespace between slices stays in the body.
-local function SplitBodyForPages(body, out)
+local function SplitBodyForPages(body, out, entry)
     wipe(out)
     local len = #body
-    local start = 1
+    local fs, _, leafH = PrepareMeasure(entry)
+    local start, first = 1, true
     while true do
-        if len - start + 1 <= CHARS_PER_ENTRY_PAGE then
+        local cut
+        if fs then
+            local top = LEAF.TOP + (first and (LEAF.TITLE_H + LEAF.META_H) or LEAF.CONT_H)
+            local avail = leafH - top - LEAF.BODY_BOTTOM - LEAF.BODY_INSET - 2   -- 2 px spare for rounding
+            if TextFits(fs, body:sub(start, len), avail) then
+                cut = len
+            else
+                -- Most text that fits; at least one character, so every leaf moves on.
+                local lo, hi = start, len - 1
+                while lo < hi do
+                    local mid = math.floor((lo + hi + 1) / 2)
+                    if TextFits(fs, body:sub(start, mid), avail) then lo = mid else hi = mid - 1 end
+                end
+                cut = lo
+            end
+        else
+            cut = math.min(len, start + CHARS_PER_ENTRY_PAGE - 1)
+        end
+        if cut >= len then
             out[#out + 1] = start
             out[#out + 1] = len
             return out
         end
-        local cut = start + CHARS_PER_ENTRY_PAGE - 1
-        -- Prefer break at whitespace so words stay whole
-        local space = body:sub(start, cut):match(".*()%s")
-        if space and space > CHARS_PER_ENTRY_PAGE * 0.5 then
-            cut = start + space - 2
+        -- Keep words whole: end at the last whitespace unless the cut already sits on one.
+        if not body:find("^%s", cut + 1) then
+            local space = body:sub(start, cut):match(".*()%s")
+            if space and space > 1 then
+                cut = start + space - 2
+            else
+                -- One word longer than a page: cut it, but not inside a UTF-8 character.
+                local b = body:byte(cut + 1)
+                while cut > start and b and b >= 0x80 and b < 0xC0 do
+                    cut = cut - 1
+                    b = body:byte(cut + 1)
+                end
+            end
         end
+        first = false
         local lastInk = body:sub(start, cut):match("^.*()%S")
         out[#out + 1] = start
         out[#out + 1] = lastInk and (start + lastInk - 1) or (start - 1)
@@ -256,7 +384,24 @@ local function SplitBodyForPages(body, out)
     end
 end
 
-local splitScratch = {}
+--- An entry's leaf ranges, measured once and reused until its text, its font or size, the
+--- Tome-wide font, or the leaf size changes (page turns rebuild often; measuring isn't free).
+function EntryPageRanges(entry, body)
+    local th = Theme()
+    local active = th and th.Fonts and th.Fonts.activeKey
+    local host = journal and journal.leftHost
+    local w, h = host and host:GetWidth() or 0, host and host:GetHeight() or 0
+    local c = splitCache[entry]
+    if c and c.body == body and c.fontKey == entry.fontKey and c.offset == entry.fontSizeOffset
+        and c.active == active and c.w == w and c.h == h then
+        return c.ranges
+    end
+    c = c or { ranges = {} }
+    SplitBodyForPages(body, c.ranges, entry)
+    c.body, c.fontKey, c.offset, c.active, c.w, c.h = body, entry.fontKey, entry.fontSizeOffset, active, w, h
+    splitCache[entry] = c
+    return c.ranges
+end
 
 local BuildSpreads
 
@@ -325,7 +470,7 @@ function BuildSpreads()
     for j = 1, #list do
         local e = list[j]
         local body = e.body or ""
-        local ranges = SplitBodyForPages(body, splitScratch)
+        local ranges = EntryPageRanges(e, body)
         local startLeaf = leafNum
         for r = 1, #ranges, 2 do
             local first = (r == 1)
@@ -340,6 +485,8 @@ function BuildSpreads()
                 segEnd = ranges[r + 1],
                 isContinuation = not first,
                 leafNum = leafNum,
+                part = (r + 1) / 2,         -- which of the entry's pages (bookmarks)
+                lastPart = #ranges / 2,
             }
             leafNum = leafNum + 1
         end
@@ -440,7 +587,6 @@ end
 local kidPools = { title = {}, bodyScroll = {} }
 local titleEditPool = kidPools.title
 local bodyScrollPool = kidPools.bodyScroll
-local RetireSticky -- defined with the sticky cards below
 
 -- Detach a page editor from its entry before it is hidden.  Hiding a focused
 -- EditBox fires OnEditFocusLost; with the entry still attached, a retired
@@ -467,7 +613,7 @@ local function ClearLeaf(leaf)
         elseif kind == "bodyScroll" then
             RetirePageEdit(k._baEdit)
         elseif kind == "sticky" then
-            RetireSticky(k)
+            Book.RetireSticky(k)
         end
         -- FontStrings and Textures have no scripts or mouse.
         local otype = k:GetObjectType()
@@ -619,20 +765,199 @@ local function UnlockJournaling()
     end
 end
 
---- A blank page placed right after `entry` in the book's chronology.
-local function InsertPageAfter(entry)
+-- Every new page first asks which year it's set in: players also write up events from
+-- years ago. Years are stored as ADP (in the field `yearKC`) and typed in the player's
+-- faction calendar (K.C. for the Alliance, ADP/BDP for the Horde).
+-- One table, not new locals: this file sits at Lua's 200-local limit.
+local PageYear = {}
+
+--- The present year as the player's calendar numbers it (634 for 634 K.C.).
+function PageYear.Shown(adp)
+    local cal = Blackacre.YearCalendar
+    return cal.FactionCalendar() == "KC" and cal.ToKC(adp) or adp
+end
+
+--- A typed year in the player's calendar -> ADP, or nil if it isn't a usable year.
+--- (Above 200 ADP, stored years read as K.C.; see Theme.FormatFactionYear.)
+function PageYear.Parse(text)
+    local n = tonumber(text)
+    if not n or n ~= math.floor(n) then return nil end
+    local cal = Blackacre.YearCalendar
+    local adp = cal.FactionCalendar() == "KC" and cal.FromKC(n) or n
+    if adp > 200 then return nil end
+    return adp
+end
+
+--- "Current year or custom year?", then fn(yearADP). Cancel adds nothing.
+function PageYear.Ask(fn)
+    if not StaticPopupDialogs["Blackacre_PAGE_YEAR"] then
+        StaticPopupDialogs["Blackacre_PAGE_YEAR"] = {
+            text = "Which year is this page set in?\nThe current year is %s.",
+            button1 = "Current year",
+            button2 = "Cancel",
+            button3 = "Custom year",
+            OnAccept = function(_, cb) cb(Blackacre.YearCalendar.GetPresentADP()) end,
+            OnAlt = function(_, cb) PageYear.AskCustom(cb) end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    StaticPopup_Show("Blackacre_PAGE_YEAR",
+        Blackacre.UI.Theme.FormatFactionYear(Blackacre.YearCalendar.GetPresentADP()), nil, fn)
+end
+
+function PageYear.AskCustom(fn)
+    if not StaticPopupDialogs["Blackacre_PAGE_YEAR_CUSTOM"] then
+        StaticPopupDialogs["Blackacre_PAGE_YEAR_CUSTOM"] = {
+            text = "Type the year this page is set in (%s).",
+            button1 = "OK",
+            button2 = "Cancel",
+            hasEditBox = true,
+            maxLetters = 6,
+            OnShow = function(self)
+                local box = self.editBox or self:GetEditBox()
+                if box then
+                    box:SetText(tostring(PageYear.Shown(Blackacre.YearCalendar.GetPresentADP())))
+                    box:HighlightText()
+                    box:SetFocus()
+                end
+            end,
+            OnAccept = function(self, cb)
+                local box = self.editBox or self:GetEditBox()
+                local adp = PageYear.Parse(box and box:GetText())
+                if not adp then
+                    if Blackacre.UI and Blackacre.UI.Theme then
+                        Blackacre.UI.Theme.Toast("That isn't a year: type a whole number, like 620.", "tome")
+                    end
+                    return true   -- keep the box open to try again
+                end
+                cb(adp)
+            end,
+            EditBoxOnEnterPressed = function(self)
+                local parent = self:GetParent()
+                if parent and parent.button1 then
+                    parent.button1:Click()
+                end
+            end,
+            EditBoxOnEscapePressed = function(self)
+                self:GetParent():Hide()
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    local unit = Blackacre.YearCalendar.FactionCalendar() == "KC" and "K.C."
+        or "ADP; before the Dark Portal, a negative number"
+    StaticPopup_Show("Blackacre_PAGE_YEAR_CUSTOM", unit, nil, fn)
+end
+
+--- A blank page placed right after `entry` in the book's chronology, set in `yearADP`.
+local function InsertPageAfter(entry, yearADP)
     local storyAt = Blackacre.Chronicle.Store.StoryTimeAfter(entry)
-    Blackacre.Chronicle.Capture.AddManual(nil, nil, "MANUAL", storyAt, entry.yearKC)
+    Blackacre.Chronicle.Capture.AddManual(nil, nil, "MANUAL", storyAt, yearADP or entry.yearKC)
     UnlockJournaling()
 end
 
-local function AddPageAtEnd()
-    Blackacre.Chronicle.Capture.AddManual()
+local function AddPageAtEnd(yearADP)
+    Blackacre.Chronicle.Capture.AddManual(nil, nil, "MANUAL", nil, yearADP)
     UnlockJournaling()
+end
+
+--- First entry leaf, in page order, numbered `n` or later (nil past the last page);
+--- `last` is the book's final entry leaf either way.
+local function EntryLeafFrom(n)
+    local found, last
+    for i = 1, #spreads do
+        local s = spreads[i]
+        for side = 1, 2 do
+            local leaf = side == 1 and s.left or s.right
+            if leaf and leaf.kind == "entry" then
+                last = leaf
+                if not found and leaf.leafNum >= n then found = leaf end
+            end
+        end
+    end
+    return found, last
+end
+
+--- "Insert Page At": a blank page that becomes page `n`, moving that page and every one
+--- after it one on. A number inside the contents makes it the first page, one past the end
+--- the last. Entries aren't split, so a number partway through a long entry puts the new
+--- page just before that entry.
+local function InsertPageAt(n, yearADP)
+    RebuildSpreads()
+    local store = Blackacre.Chronicle.Store
+    local target, last = EntryLeafFrom(n)
+    local placeAfter
+    if not target then
+        -- Past the end: after the last page.
+        if not last or oldestFirst then
+            AddPageAtEnd(yearADP)
+            return
+        end
+        placeAfter = last.entry
+    end
+    local entry = placeAfter or target.entry
+    if target and target.isContinuation and Blackacre.UI and Blackacre.UI.Theme then
+        Blackacre.UI.Theme.Toast(string.format("Page %d is part of \"%s\", so the new page goes just before it.",
+            n, entry.title or "Untitled"), "tome")
+    end
+    -- Oldest first reads forward in story time, newest first backward.
+    local before = (placeAfter == nil) == oldestFirst
+    local storyAt = before and store.StoryTimeBefore(entry) or store.StoryTimeAfter(entry)
+    Blackacre.Chronicle.Capture.AddManual(nil, nil, "MANUAL", storyAt, yearADP or entry.yearKC)
+    UnlockJournaling()
+end
+
+local function ShowInsertPageAtPopup()
+    if not StaticPopupDialogs["Blackacre_INSERT_PAGE_AT"] then
+        StaticPopupDialogs["Blackacre_INSERT_PAGE_AT"] = {
+            text = "Type the page number you want this to be inserted at",
+            button1 = "OK",
+            button2 = "Cancel",
+            hasEditBox = true,
+            maxLetters = 5,
+            OnShow = function(self)
+                local box = self.editBox or self:GetEditBox()
+                if box then
+                    box:SetNumeric(true)
+                    box:SetText("")
+                    box:SetFocus()
+                end
+            end,
+            OnAccept = function(self)
+                local box = self.editBox or self:GetEditBox()
+                local n = tonumber(box and box:GetText() or "")
+                if n then
+                    n = math.max(1, math.floor(n))
+                    PageYear.Ask(function(yearADP) InsertPageAt(n, yearADP) end)
+                end
+            end,
+            EditBoxOnEnterPressed = function(self)
+                local parent = self:GetParent()
+                if parent and parent.button1 then
+                    parent.button1:Click()
+                end
+            end,
+            EditBoxOnEscapePressed = function(self)
+                self:GetParent():Hide()
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    StaticPopup_Show("Blackacre_INSERT_PAGE_AT")
 end
 
 --- TOC right-click: Edit title · Bookmark · New page after · Delete.
-local function ShowTocEntryMenu(entry)
+--- `part`: the page a "Bookmarked" line stands for; other lines mean the entry's first page.
+local function ShowTocEntryMenu(entry, part)
     if not entry then return end
     if not journal then return end
     if not journal.tocMenu then
@@ -657,7 +982,9 @@ local function ShowTocEntryMenu(entry)
         journal.tocMenu = m
     end
     local m = journal.tocMenu
-    m.pinBtn:SetText(entry.pinned and "Remove bookmark" or "Bookmark page")
+    part = part or 1
+    local lastPart = (entry._baLeafRight and entry._baLeafLeft) and (entry._baLeafRight - entry._baLeafLeft + 1) or 1
+    m.pinBtn:SetText(Book.IsPageBookmarked(entry, part, lastPart) and "Remove bookmark" or "Bookmark page")
     FitButtonWidth(m.pinBtn, 114)
     local widest = math.max(m.editBtn:GetWidth(), m.pinBtn:GetWidth(), m.insertBtn:GetWidth(), m.delBtn:GetWidth())
     m:SetWidth(widest + 16)
@@ -667,17 +994,11 @@ local function ShowTocEntryMenu(entry)
     end)
     m.insertBtn:SetScript("OnClick", function()
         m:Hide()
-        InsertPageAfter(entry)
+        PageYear.Ask(function(yearADP) InsertPageAfter(entry, yearADP) end)
     end)
     m.pinBtn:SetScript("OnClick", function()
-        entry.pinned = not entry.pinned
-        Blackacre.Chronicle.Store.Update(entry.id, { pinned = entry.pinned })
-        if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
-        if Blackacre.Print then
-            Blackacre.Print(entry.pinned and "Page bookmarked" or "Bookmark removed")
-        end
         m:Hide()
-        Blackacre.Chronicle.UI.RenderSpread()
+        Book.ToggleBookmark(entry, part, lastPart)
     end)
     m.delBtn:SetScript("OnClick", function()
         m:Hide()
@@ -733,712 +1054,14 @@ ShowTitleEditPopup = function(entry)
     StaticPopup_Show("Blackacre_EDIT_TITLE", nil, nil, entry)
 end
 
-local function EnsureStickyNotes(entry)
-    entry.stickyNotes = entry.stickyNotes or {}
-    return entry.stickyNotes
-end
+-- Sticky notes, pin mode and page clicks live in UI_Stickies.lua: this file sits near
+-- Lua's 200-local limit. That file loads after this one, reads these helpers, and puts
+-- RenderStickyNotes, RetireSticky etc. on Book for the calls below.
+Book.Theme, Book.TryAtlas, Book.ApplyAtlasMember = Theme, TryAtlas, ApplyAtlasMember
+Book.FitButtonWidth, Book.GetScrap, Book.AcquireKid = FitButtonWidth, GetScrap, AcquireKid
 
-local function PersistStickies(entry)
-    if not entry or not entry.id then return end
-    Blackacre.Chronicle.Store.Update(entry.id, { stickyNotes = EnsureStickyNotes(entry) })
-end
-
-local function HideStickyMenu()
-    if journal and journal.stickyMenu then
-        journal.stickyMenu:Hide()
-    end
-end
-
-local function SaveStickyGeometry(card)
-    local note = card and card._note
-    local parent = card and card:GetParent()
-    if not note or not parent or parent == GetScrap() then return end
-    local pl, pt = parent:GetLeft(), parent:GetTop()
-    local cl, ct = card:GetLeft(), card:GetTop()
-    if pl and pt and cl and ct then
-        note.x = cl - pl
-        note.y = ct - pt
-    end
-    note.w = card:GetWidth() or note.w or 150
-    note.h = card:GetHeight() or note.h or 90
-end
-
-local function SetTextureFromList(tex, atlases, files)
-    if not tex then return false end
-    if atlases then
-        for i = 1, #atlases do
-            if ApplyAtlasMember(tex, atlases[i], false) then
-                return true
-            end
-        end
-    end
-    if files then
-        for i = 1, #files do
-            tex:SetTexture(files[i])
-            if tex.GetTexture and tex:GetTexture() then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function SetResizeGripLook(grip, active)
-    if not grip then return end
-    local tex = grip.icon
-    if not tex then return end
-    tex:Show()
-    if active then
-        if not SetTextureFromList(tex, {
-            "Cursor_UI-Cursor-Size_32",
-            "Cursor_UI-Cursor-Size32",
-        }, {
-            "Interface\\Cursor\\UIResizeCursor2x",
-            "Interface\\Cursor\\UI-Cursor-Size",
-        }) then
-            tex:SetTexture("Interface\\Cursor\\UI-Cursor-Size")
-        end
-    else
-        if not SetTextureFromList(tex, {
-            "Cursor_UnableUI-Cursor_size_48",
-            "Cursor_UnableUI-Cursor-Size_48",
-            "Cursor_UnableUI-Cursor-Size48",
-        }, {
-            "Interface\\Cursor\\UIResizeCursor2x",
-            "Interface\\Cursor\\UI-Cursor-Size",
-        }) then
-            tex:SetTexture("Interface\\Cursor\\UI-Cursor-Size")
-        end
-    end
-    tex:SetAlpha(1)
-end
-
-local function StopStickyResize(card)
-    if not card then return end
-    card.isResizing = false
-    card:SetScript("OnUpdate", nil)
-    local grip = card.resizeGrip
-    if grip and not (grip.IsMouseOver and grip:IsMouseOver()) then
-        SetResizeGripLook(grip, false)
-    end
-end
-
---- Right-click still toggles edit/lock. Delete is always on the note.
-local function ShowStickyActionRow(card, showActions)
-    if not card then return end
-    card._baActionsOpen = showActions and true or false
-    if card.deleteBtn then card.deleteBtn:Show() end
-end
-
-local function ApplyStickyLocked(card, locked)
-    local note = card._note
-    if not note then return end
-    note.pinned = locked and true or false
-    card._baEditOpen = not locked
-    StopStickyResize(card)
-    card:SetMovable(true)
-    if card.header then
-        card.header:RegisterForDrag("LeftButton")
-        card.header:EnableMouse(true)
-    end
-    if card.resizeGrip then
-        card.resizeGrip:Show()
-        card.resizeGrip:EnableMouse(true)
-        card.resizeGrip:RegisterForDrag("LeftButton")
-        SetResizeGripLook(card.resizeGrip, false)
-    end
-    if card.deleteBtn then card.deleteBtn:Show() end
-    if locked then
-        if card.status then card.status:SetText("") end
-        if card.box then
-            card.box:Disable()
-            card.box:ClearFocus()
-            card.box:SetTextColor(0.12, 0.1, 0.05, 1)
-        end
-    else
-        if card.status then card.status:SetText("") end
-        if card.box then
-            card.box:Enable()
-            card.box:SetTextColor(0.05, 0.05, 0.06, 1)
-        end
-    end
-end
-
-local function DeleteStickyNote(entry, note)
-    local notes = EnsureStickyNotes(entry)
-    for i = #notes, 1, -1 do
-        if notes[i] == note or (note.id and notes[i].id == note.id) then
-            table.remove(notes, i)
-            break
-        end
-    end
-    PersistStickies(entry)
-    HideStickyMenu()
-    if Theme() and Theme().PlayUISound then Theme().PlayUISound("paperTear") end
-    Blackacre.Chronicle.UI.RenderSpread()
-end
-
-local function BuildStickyMenu()
-    -- Pop-out menu removed (E0): lock/delete live on the scrap itself.
-    if journal and journal.stickyMenu then
-        journal.stickyMenu:Hide()
-    end
-end
-
-local function ToggleStickyRightClick(card, entry, note)
-    -- Right-click still toggles lock without a floating menu
-    if card._baEditOpen then
-        if card.box then note.text = card.box:GetText() or note.text end
-        SaveStickyGeometry(card)
-        ApplyStickyLocked(card, true)
-        PersistStickies(entry)
-        ShowStickyActionRow(card, false)
-        if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
-        return
-    end
-    ApplyStickyLocked(card, false)
-    ShowStickyActionRow(card, true)
-    if card.box then card.box:SetFocus() end
-end
-
---- Freeform sticky scrap (Spellbook page fill); menu icon TR; resize offline icon BR.
---- Cards are pooled: built once, then re-bound to a note each render. Every
---- handler reads card._entry / card._note so a reused card follows its note.
-local function StickyBeginDrag(self)
-    local card = self._baCard or self
-    HideStickyMenu()
-    card:StartMoving()
-end
-
-local function StickyEndDrag(self)
-    local card = self._baCard or self
-    card:StopMovingOrSizing()
-    local note, entry = card._note, card._entry
-    if not note then return end
-    local p = card:GetParent()
-    if p and p ~= GetScrap() then
-        local pl, pt = p:GetLeft(), p:GetTop()
-        local cl, ct = card:GetLeft(), card:GetTop()
-        if pl and pt and cl and ct then
-            note.x = cl - pl
-            note.y = ct - pt
-            card:ClearAllPoints()
-            card:SetPoint("TOPLEFT", p, "TOPLEFT", note.x, note.y)
-        end
-    end
-    SaveStickyGeometry(card)
-    PersistStickies(entry)
-end
-
-local function StickyHeader_OnClick(self, button)
-    local card = self._baCard
-    if button == "RightButton" and card._note then
-        ToggleStickyRightClick(card, card._entry, card._note)
-    end
-end
-
-local function StickyDelete_OnClick(self)
-    local card = self._baCard
-    if card._note then DeleteStickyNote(card._entry, card._note) end
-end
-
-local function StickyBox_OnEscape(self)
-    self:ClearFocus()
-end
-
-local function StickyBox_OnFocusLost(self)
-    local card = self._baCard
-    if not card._note then return end
-    card._note.text = self:GetText() or ""
-    PersistStickies(card._entry)
-end
-
-local function StickyBox_OnMouseUp(self, button)
-    local card = self._baCard
-    if button == "RightButton" and card._note then
-        ToggleStickyRightClick(card, card._entry, card._note)
-    end
-end
-
--- Resize: grey unable cursor idle, gold size cursor while dragging. Always shown.
-local function StickyResize_OnUpdate(self)
-    if not self.isResizing then
-        StopStickyResize(self)
-        return
-    end
-    local scale = self:GetEffectiveScale() or 1
-    local cx, cy = GetCursorPosition()
-    cx, cy = cx / scale, cy / scale
-    local left, top = self:GetLeft(), self:GetTop()
-    if not left or not top then return end
-    local nw = math.max(100, math.min(280, cx - left))
-    local nh = math.max(60, math.min(220, top - cy))
-    self:SetSize(nw, nh)
-    if self._note then self._note.w, self._note.h = nw, nh end
-end
-
-local function Grip_OnEnter(self) SetResizeGripLook(self, true) end
-
-local function Grip_OnLeave(self)
-    local card = self._baCard
-    if card.isResizing or card._baGripHeld then return end
-    SetResizeGripLook(self, false)
-end
-
-local function Grip_OnMouseDown(self)
-    self._baCard._baGripHeld = true
-    SetResizeGripLook(self, true)
-end
-
-local function Grip_OnMouseUp(self)
-    self._baCard._baGripHeld = false
-    if not self:IsMouseOver() then SetResizeGripLook(self, false) end
-end
-
-local function Grip_OnDragStart(self)
-    local card = self._baCard
-    HideStickyMenu()
-    card.isResizing = true
-    SetResizeGripLook(self, true)
-    card:SetScript("OnUpdate", StickyResize_OnUpdate)
-end
-
-local function Grip_OnDragStop(self)
-    local card = self._baCard
-    card._baGripHeld = false
-    StopStickyResize(card)
-    if self:IsMouseOver() then SetResizeGripLook(self, true) end
-    SaveStickyGeometry(card)
-    PersistStickies(card._entry)
-end
-
-local function BuildStickyCard(parent)
-    local card = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-    card:SetClampedToScreen(false)
-    -- adventureguide-pane-small; keep default 150×90, still resizable.
-    if card.SetBackdrop then card:SetBackdrop(nil) end
-    local pane = card:CreateTexture(nil, "BACKGROUND")
-    pane:SetAllPoints(card)
-    if not TryAtlas(pane, "adventureguide-pane-small", false) then
-        pane:SetColorTexture(0.97, 0.93, 0.82, 0.95)
-    end
-    card.pane = pane
-    card:EnableMouse(true)
-    card:SetMovable(true)
-    card:RegisterForDrag("LeftButton")
-    card._baIsSticky = true
-    card:SetScript("OnDragStart", StickyBeginDrag)
-    card:SetScript("OnDragStop", StickyEndDrag)
-
-    local header = CreateFrame("Button", nil, card)
-    header._baCard = card
-    header:SetPoint("TOPLEFT", 3, -3)
-    header:SetPoint("TOPRIGHT", -32, -3)
-    header:SetHeight(22)
-    header:RegisterForClicks("RightButtonUp")
-    header:RegisterForDrag("LeftButton")
-    header:SetScript("OnDragStart", StickyBeginDrag)
-    header:SetScript("OnDragStop", StickyEndDrag)
-    header:SetScript("OnClick", StickyHeader_OnClick)
-    card.header = header
-
-    local deleteBtn = CreateFrame("Button", nil, card)
-    deleteBtn._baCard = card
-    deleteBtn:SetSize(28, 28)
-    deleteBtn:SetPoint("TOPRIGHT", -1, -1)
-    deleteBtn:EnableMouse(true)
-    deleteBtn:RegisterForClicks("LeftButtonUp")
-    if deleteBtn.SetNormalAtlas then
-        pcall(deleteBtn.SetNormalAtlas, deleteBtn, "128-RedButton-Delete")
-        if deleteBtn.SetPushedAtlas then
-            pcall(deleteBtn.SetPushedAtlas, deleteBtn, "128-RedButton-Delete-Pressed")
-        end
-        if deleteBtn.SetHighlightAtlas then
-            pcall(deleteBtn.SetHighlightAtlas, deleteBtn, "128-RedButton-Delete-Highlight")
-        end
-    else
-        local n = deleteBtn:CreateTexture(nil, "ARTWORK")
-        n:SetAllPoints()
-        TryAtlas(n, "128-RedButton-Delete", false)
-        deleteBtn:SetNormalTexture(n)
-        local p = deleteBtn:CreateTexture(nil, "ARTWORK")
-        p:SetAllPoints()
-        TryAtlas(p, "128-RedButton-Delete-Pressed", false)
-        deleteBtn:SetPushedTexture(p)
-        local h = deleteBtn:CreateTexture(nil, "HIGHLIGHT")
-        h:SetAllPoints()
-        TryAtlas(h, "128-RedButton-Delete-Highlight", false)
-        deleteBtn:SetHighlightTexture(h)
-    end
-    deleteBtn:SetScript("OnClick", StickyDelete_OnClick)
-    card.deleteBtn = deleteBtn
-
-    local status = header:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    status:SetPoint("LEFT", 4, 0)
-    status:SetPoint("RIGHT", -4, 0)
-    status:SetJustifyH("LEFT")
-    status:SetText("")
-    card.status = status
-
-    local box = CreateFrame("EditBox", nil, card)
-    box._baCard = card
-    box:SetMultiLine(true)
-    box:SetAutoFocus(false)
-    box:SetPoint("TOPLEFT", 8, -30)
-    box:SetPoint("BOTTOMRIGHT", -28, 26)
-    box:SetTextInsets(2, 2, 2, 2)
-    box:SetScript("OnEscapePressed", StickyBox_OnEscape)
-    box:SetScript("OnEditFocusLost", StickyBox_OnFocusLost)
-    box:SetScript("OnMouseUp", StickyBox_OnMouseUp)
-    card.box = box
-
-    local grip = CreateFrame("Button", nil, card)
-    grip._baCard = card
-    grip:SetSize(24, 24)
-    grip:SetPoint("BOTTOMRIGHT", 0, 0)
-    grip:EnableMouse(true)
-    grip.icon = grip:CreateTexture(nil, "ARTWORK")
-    grip.icon:SetAllPoints()
-    grip:SetScript("OnEnter", Grip_OnEnter)
-    grip:SetScript("OnLeave", Grip_OnLeave)
-    grip:SetScript("OnMouseDown", Grip_OnMouseDown)
-    grip:SetScript("OnMouseUp", Grip_OnMouseUp)
-    grip:RegisterForDrag("LeftButton")
-    grip:SetScript("OnDragStart", Grip_OnDragStart)
-    grip:SetScript("OnDragStop", Grip_OnDragStop)
-    card.resizeGrip = grip
-    return card
-end
-
--- Save and detach before the card goes back to the pool.
-RetireSticky = function(card)
-    if card.box:HasFocus() then card.box:ClearFocus() end -- saves via OnEditFocusLost
-    StopStickyResize(card)
-    card._baGripHeld = false
-end
-
--- A note sits 10 levels above its leaf, so the page's text (leaf + 1..2)
--- stays under it.
-local function SetStickyLevels(card, parent)
-    local level = (parent:GetFrameLevel() or 1) + 10
-    card:SetFrameLevel(level)
-    card.header:SetFrameLevel(level + 1)
-    card.box:SetFrameLevel(level + 1)
-    card.deleteBtn:SetFrameLevel(level + 8)
-    card.resizeGrip:SetFrameLevel(level + 8)
-end
-
-local function BindStickyCard(card, parent, entry, note, index)
-    note.w = tonumber(note.w) or 150
-    note.h = tonumber(note.h) or 90
-    note.x = tonumber(note.x) or (16 + ((index - 1) % 2) * 18)
-    note.y = tonumber(note.y) or (-70 - (index - 1) * 22)
-    if note.pinned == nil then note.pinned = true end
-
-    card._note = note
-    card._entry = entry
-    card._baEditOpen = false
-    card._baActionsOpen = false
-    card:SetSize(note.w, note.h)
-    card:ClearAllPoints()
-    card:SetPoint("TOPLEFT", parent, "TOPLEFT", note.x, note.y)
-    -- Levels are set every time, not just at build: a reused card must sit
-    -- above this leaf's page text, or the page's text box takes its clicks.
-    SetStickyLevels(card, parent)
-    card.resizeGrip:Show()
-    SetResizeGripLook(card.resizeGrip, false)
-
-    local box = card.box
-    local noteText = note.text or ""
-    if Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.SanitizeBodyText then
-        noteText = Blackacre.UI.Theme.SanitizeBodyText(noteText)
-    end
-    box:SetText(noteText)
-    box:SetTextColor(0.12, 0.1, 0.05, 1)
-    if Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.ApplyReadableBodyFont then
-        Blackacre.UI.Theme.ApplyReadableBodyFont(box, 0)
-    else
-        box:SetFontObject(GameFontHighlightSmall)
-    end
-
-    ApplyStickyLocked(card, note.pinned == true)
-    return card
-end
-
---- Stickies for this entry on this leaf (filter by note.leafSide when set).
-local function RenderStickyNotes(pageLeaf, entry, side)
-    HideStickyMenu()
-    if not pageLeaf or not entry then return end
-    local notes = EnsureStickyNotes(entry)
-    local n = 0
-    for i = 1, #notes do
-        local note = notes[i]
-        -- Legacy notes without leafSide default to left leaf
-        local noteSide = note.leafSide or "left"
-        if noteSide == side then
-            n = n + 1
-            local card = AcquireKid("sticky", pageLeaf, BuildStickyCard)
-            BindStickyCard(card, pageLeaf, entry, note, n)
-        end
-    end
-end
-
-local function EntryOnLeafSide(side)
-    local s = spreads[spreadIndex]
-    if not s or (side ~= "left" and side ~= "right") then return nil, nil end
-    local leaf = (side == "left") and s.left or s.right
-    if leaf and leaf.kind == "entry" and leaf.entry then
-        return leaf.entry, side
-    end
-    return nil, side
-end
-
-local pinModeActive = false
-local pinModeFrame
-
-local function EndPinMode()
-    pinModeActive = false
-    if pinModeFrame then pinModeFrame:Hide() end
-    if ResetCursor then ResetCursor() end
-end
-
---- Place scrap on leaf; if relX/relY given, top-right of scrap anchors there (parent TOPLEFT space).
-local function AddStickyToLeaf(side, relX, relY)
-    local entry, resolvedSide = EntryOnLeafSide(side)
-    if not entry then return false end
-    local notes = EnsureStickyNotes(entry)
-    local w, h = 150, 90
-    local x, y
-    if relX and relY then
-        -- TOPRIGHT of note at click: TOPLEFT = clickX - w, clickY
-        x = relX - w
-        y = relY
-    end
-    local note = {
-        id = (Blackacre.NewID and Blackacre.NewID()) or (tostring(time()) .. "-" .. math.random(1000, 9999)),
-        text = "",
-        x = x or (20 + (#notes % 3) * 12),
-        y = y or (-50 - #notes * 16),
-        w = w,
-        h = h,
-        pinned = false, -- a new note opens ready to write in; right-click locks it
-        createdAt = time(),
-        leafSide = resolvedSide,
-    }
-    notes[#notes + 1] = note
-    PersistStickies(entry)
-    if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
-    Blackacre.Chronicle.UI.RenderSpread()
-    local host = (resolvedSide == "left") and journal.leftHost or journal.rightHost
-    local kids = host and host._baKids
-    if kids then
-        for i = 1, #kids do
-            if kids[i]._note == note then
-                kids[i].box:SetFocus()
-                break
-            end
-        end
-    end
-    return true
-end
-
-function Blackacre.Chronicle.UI.BeginPinMode()
-    Blackacre.Chronicle.UI.EnsureBuilt()
-    pinModeActive = true
-    if not pinModeFrame then
-        pinModeFrame = CreateFrame("Frame", "BlackacrePinModeOverlay", UIParent)
-        pinModeFrame:SetAllPoints(UIParent)
-        pinModeFrame:SetFrameStrata("FULLSCREEN_DIALOG")
-        pinModeFrame:EnableMouse(true)
-        local pinCursor = (Theme() and Theme().Textures and (Theme().Textures.mapPinCursor or Theme().Textures.mapPinCursorCross))
-            or "Interface\\Cursor\\MapPinCursor"
-        -- The client resets the cursor every frame while this overlay is shown. No pcall on that path.
-        pinModeFrame:SetScript("OnUpdate", function()
-            if pinModeActive and SetCursor then
-                SetCursor(pinCursor)
-            end
-        end)
-        pinModeFrame:SetScript("OnMouseUp", function(_, button)
-            if button == "RightButton" then
-                EndPinMode()
-                return
-            end
-            if button ~= "LeftButton" then return end
-            -- Hit-test leaves under cursor
-            local left = journal and journal.leftHost
-            local right = journal and journal.rightHost
-            local scale = UIParent:GetEffectiveScale() or 1
-            local cx, cy = GetCursorPosition()
-            cx, cy = cx / scale, cy / scale
-            local function tryHost(host, side)
-                if not host or not host:IsVisible() then return false end
-                local l, r, t, b = host:GetLeft(), host:GetRight(), host:GetTop(), host:GetBottom()
-                if not l or not r or not t or not b then return false end
-                if cx >= l and cx <= r and cy >= b and cy <= t then
-                    local relX = cx - l
-                    local relY = cy - t -- negative below top
-                    if AddStickyToLeaf(side, relX, relY) then
-                        EndPinMode()
-                        return true
-                    end
-                end
-                return false
-            end
-            if not tryHost(left, "left") then
-                tryHost(right, "right")
-            end
-            EndPinMode()
-        end)
-        pinModeFrame:EnableKeyboard(true)
-        pinModeFrame:SetScript("OnKeyDown", function(self, key)
-            if key == "ESCAPE" then
-                EndPinMode()
-                if self.SetPropagateKeyboardInput then self:SetPropagateKeyboardInput(false) end
-            elseif self.SetPropagateKeyboardInput then
-                self:SetPropagateKeyboardInput(true)
-            end
-        end)
-    end
-    pinModeFrame:Show()
-end
-
-local function HideAddNoteMenu()
-    if journal and journal.addNoteMenu then
-        journal.addNoteMenu:Hide()
-    end
-end
-
---- Cursor popup: Add scrap note? / Bookmark (un)bookmark this page / Cancel.
-local function ShowAddNoteMenuAtCursor(side)
-    local entry = EntryOnLeafSide(side)
-    if not entry then return end -- TOC / blank: do nothing, no toast
-
-    if not journal.addNoteMenu then
-        local m = CreateFrame("Frame", "BlackacreAddNoteMenu", UIParent, "BackdropTemplate")
-        m:SetSize(150, 90)
-        m:SetFrameStrata("FULLSCREEN_DIALOG")
-        if Theme() and Theme().ApplyChromeMenuFrame then
-            Theme().ApplyChromeMenuFrame(m)
-        end
-        m:EnableMouse(true)
-        m:Hide()
-        local addBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-        addBtn:SetHeight(22)
-        addBtn:SetPoint("TOP", 0, -8)
-        addBtn:SetText("Add scrap note")
-        FitButtonWidth(addBtn, 130)
-        m.addBtn = addBtn
-        local bookmarkBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-        bookmarkBtn:SetHeight(22)
-        bookmarkBtn:SetPoint("TOP", addBtn, "BOTTOM", 0, -6)
-        m.bookmarkBtn = bookmarkBtn
-        local cancelBtn = CreateFrame("Button", nil, m, "UIPanelButtonTemplate")
-        cancelBtn:SetHeight(22)
-        cancelBtn:SetPoint("TOP", bookmarkBtn, "BOTTOM", 0, -6)
-        cancelBtn:SetText("Cancel")
-        FitButtonWidth(cancelBtn, 130)
-        cancelBtn:SetScript("OnClick", function() m:Hide() end)
-        m.cancelBtn = cancelBtn
-        journal.addNoteMenu = m
-    end
-
-    local m = journal.addNoteMenu
-    m._baSide = side
-    m.addBtn:SetScript("OnClick", function()
-        AddStickyToLeaf(m._baSide)
-        m:Hide()
-    end)
-
-    m.bookmarkBtn:SetText(entry.pinned and "Remove bookmark" or "Bookmark page")
-    FitButtonWidth(m.bookmarkBtn, 130)
-    m.bookmarkBtn:SetScript("OnClick", function()
-        entry.pinned = not entry.pinned
-        Blackacre.Chronicle.Store.Update(entry.id, { pinned = entry.pinned })
-        if Theme() and Theme().PlayUISound then Theme().PlayUISound("pinSoft") end
-        if Blackacre.Print then
-            Blackacre.Print(entry.pinned and "Page bookmarked" or "Bookmark removed")
-        end
-        m:Hide()
-        Blackacre.Chronicle.UI.RenderSpread()
-    end)
-
-    local widest = math.max(m.addBtn:GetWidth(), m.bookmarkBtn:GetWidth(), m.cancelBtn:GetWidth())
-    m:SetWidth(widest + 20)
-
-    local scale = UIParent:GetEffectiveScale() or 1
-    local x, y = GetCursorPosition()
-    x, y = x / scale, y / scale
-    m:ClearAllPoints()
-    m:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x + 4, y - 4)
-    m:Show()
-end
-
--- The sticky note under the cursor on this leaf, found by position rather
--- than by which frame the client says is on top. If the page's text box ever
--- ends up above a note, clicks on the note still reach the note.
-local function StickyUnderCursor(host)
-    local kids = host and host._baKids
-    if not kids then return nil end
-    for i = #kids, 1, -1 do
-        local k = kids[i]
-        if k._baPool == "sticky" and k:IsShown() and k:IsMouseOver() then return k end
-    end
-    return nil
-end
-
--- A click that landed on a sticky note, whichever page frame received it.
--- Right: lock/unlock the note. Left: write in it (when unlocked).
--- Returns true when the click was the note's.
-local function RouteClickToSticky(host, button, receiver)
-    local card = StickyUnderCursor(host)
-    if not card or not card._note then return false end
-    if button == "RightButton" then
-        ToggleStickyRightClick(card, card._entry, card._note)
-    elseif card._baEditOpen then
-        card.box:SetFocus()
-    elseif receiver and receiver.ClearFocus then
-        receiver:ClearFocus() -- clicked a locked note: don't start typing on the page
-    end
-    return true
-end
-
-local function OnLeafRightClick(host, side, button)
-    if button ~= "RightButton" then return end
-    HideAddNoteMenu()
-    if RouteClickToSticky(host, button) then return end
-    ShowAddNoteMenuAtCursor(side)
-end
-
--- Item 5: left-clicking anywhere on an editable page (margins, below the
--- text, the title gap) puts the cursor in that page's body, at the end.
-local function FocusLeafBody(host)
-    local parts = journal and journal._baBodyParts
-    if not parts then return end
-    for i = 1, #parts do
-        local box = parts[i]
-        if box._baLeafHost == host and box:IsEnabled() then
-            box:SetFocus()
-            box:SetCursorPosition(#(box:GetText() or ""))
-            return
-        end
-    end
-end
-
--- Shared handler (no per-render closure); side is read off the leaf.
-local function Leaf_OnMouseUp(self, button)
-    if button == "LeftButton" then
-        if not RouteClickToSticky(self, button) then FocusLeafBody(self) end
-    else
-        OnLeafRightClick(self, self._baLeafSide, button)
-    end
-end
-
---- Wire leaf + its children so right page (covered by EditBox) still gets right-click.
-local function WireLeafRightClickAddNote(host, side)
-    if not host then return end
-    host._baLeafSide = side
-    host:EnableMouse(true)
-    host:SetScript("OnMouseUp", Leaf_OnMouseUp)
+function Book.CurrentSpread()
+    return spreads[spreadIndex]
 end
 
 --- Wrap title into lines of max 23 chars; never break mid-word (long words keep whole).
@@ -1567,11 +1190,13 @@ local function TocRow_OnClick(self, button)
     local e = self._baEntry
     if not e then return end
     if button == "RightButton" then
-        ShowTocEntryMenu(e)
+        ShowTocEntryMenu(e, self._baPart)
         return
     end
     if Theme() and Theme().PlayUISound then Theme().PlayUISound("pageTurn") end
-    if not JumpToEntrySpread(e.id) and Blackacre.UI and Blackacre.UI.Theme then
+    if self._baPart and e._baLeafLeft then
+        JumpToLeaf(e._baLeafLeft + self._baPart - 1)
+    elseif not JumpToEntrySpread(e.id) and Blackacre.UI and Blackacre.UI.Theme then
         Blackacre.UI.Theme.Toast("Could not open that page.", "tome")
     end
 end
@@ -1606,7 +1231,7 @@ local function BuildTocTitle(host)
     if not TryAtlas(ribbon, "UI-Frame-Alliance-Ribbon", false) then
         TryAtlas(ribbon, "UI-Frame-Dragonflight-Ribbon", false)
     end
-    bar.title = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    bar.title = bar:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalLarge")
     bar.title:SetPoint("CENTER", 0, 1)
     bar.title:SetTextColor(1, 0.92, 0.55, 1)
     bar.title:SetDrawLayer("OVERLAY", 1)
@@ -1618,7 +1243,7 @@ end
 local function BuildTocYear(host)
     local bar = CreateFrame("Frame", nil, host)
     bar:SetHeight(20)
-    local fs = bar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local fs = bar:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormal")
     fs:SetPoint("CENTER", 0, 0)
     fs:SetTextColor(0.95, 0.88, 0.55, 1)
     bar.label = fs
@@ -1678,6 +1303,7 @@ local function RenderTocLeaf(leaf, items, heading, leafSide)
         elseif row.kind == "entry" and row.entry then
             local e = row.entry
             local pageNum = e._baLeafLeft or e._baSpreadIndex or "?"
+            if row.part and e._baLeafLeft then pageNum = e._baLeafLeft + row.part - 1 end
             local lines = BuildTocEntryLines(e, pageNum)
 
             local btn = AcquireKid("tocRow", leaf, BuildTocRow)
@@ -1686,6 +1312,7 @@ local function RenderTocLeaf(leaf, items, heading, leafSide)
             btn:SetPoint("TOPLEFT", 14, y)
             btn:EnableMouse(true)
             btn._baEntry = e
+            btn._baPart = row.part -- nil except on "Bookmarked" lines
             for i = 1, #btn._fs do btn._fs[i]:Hide() end
             btn._fsUsed = 0
 
@@ -1699,7 +1326,7 @@ local function RenderTocLeaf(leaf, items, heading, leafSide)
     end
 
     if #items == 0 then
-        local empty = AcquireFS(leaf, "GameFontHighlight")
+        local empty = AcquireFS(leaf, "BlackacreFont_GameFontHighlight")
         empty:SetPoint("TOPLEFT", 16, -80)
         empty:SetText("No pages yet, try adding a page.")
         Graphite(empty)
@@ -1720,9 +1347,9 @@ end
 local function PageEdit_OnMouseUp(self, button)
     if not self._baLeafSide then return end
     if button == "RightButton" then
-        OnLeafRightClick(self._baLeafHost, self._baLeafSide, button)
+        Book.OnLeafRightClick(self._baLeafHost, self._baLeafSide, button)
     elseif button == "LeftButton" then
-        RouteClickToSticky(self._baLeafHost, button, self)
+        Book.RouteClickToSticky(self._baLeafHost, button, self)
     end
 end
 
@@ -2267,14 +1894,14 @@ end
 
 local function BodyScroll_OnMouseUp(self, button)
     local edit = self._baEdit
-    if button == "LeftButton" and edit and RouteClickToSticky(edit._baLeafHost, button, edit) then
+    if button == "LeftButton" and edit and Book.RouteClickToSticky(edit._baLeafHost, button, edit) then
         return
     end
     if button == "LeftButton" and edit and edit:IsEnabled() and not edit:HasFocus() then
         edit:SetFocus()
         edit:SetCursorPosition(#(edit:GetText() or ""))
     elseif button == "RightButton" and edit and edit._baLeafSide then
-        OnLeafRightClick(edit._baLeafHost, edit._baLeafSide, button)
+        Book.OnLeafRightClick(edit._baLeafHost, edit._baLeafSide, button)
     end
 end
 
@@ -2387,12 +2014,12 @@ local function RenderEntryLeaf(host, leafData, leafSide)
     local editing = journalMode and not presentationMode
     local w = host:GetWidth()
     if not w or w < 50 then w = 320 end
-    local yTop = -14
+    local yTop = -LEAF.TOP
     if editing and entry.id then UndoEnsure(entry) end
 
     -- The bookmark tab now lives on hub.bookOpen, outside the leaf's own
     -- rect, so it no longer needs the leaf's text pushed over to clear it.
-    if entry.pinned then
+    if Book.IsPageBookmarked(entry, leafData.part, leafData.lastPart) then
         ShowBookmarkTab(host, leafSide)
     else
         HideBookmarkTab(leafSide)
@@ -2405,7 +2032,7 @@ local function RenderEntryLeaf(host, leafData, leafSide)
         titleEdit:SetPoint("TOPLEFT", padLeft, yTop)
         titleEdit:SetPoint("TOPRIGHT", -padRight, yTop)
         titleEdit:SetHeight(26)
-        titleEdit:SetFontObject(GameFontNormalLarge)
+        titleEdit:SetFontObject(BlackacreFont_GameFontNormalLarge)
         titleEdit:SetText(entry.title or "Untitled")
         titleEdit:SetJustifyH("LEFT")
         titleEdit._baEntry = entry
@@ -2427,11 +2054,11 @@ local function RenderEntryLeaf(host, leafData, leafSide)
             journal.titleEdit = titleEdit
             journal.displayTitle = titleEdit
         end
-        yTop = yTop - 30
+        yTop = yTop - LEAF.TITLE_H
     end
 
     if leafData.showMeta then
-        local meta = AcquireFS(host, "GameFontHighlight")
+        local meta = AcquireFS(host, "BlackacreFont_GameFontHighlight")
         meta:SetPoint("TOPLEFT", padLeft, yTop)
         meta:SetPoint("TOPRIGHT", -padRight, yTop)
         meta:SetJustifyH("LEFT")
@@ -2445,18 +2072,18 @@ local function RenderEntryLeaf(host, leafData, leafSide)
         meta:SetText(metaText)
         Graphite(meta)
         Blackacre.UI.Theme.ApplyReadableBodyFont(meta, -1)
-        yTop = yTop - 36
+        yTop = yTop - LEAF.META_H
     elseif leafData.isContinuation then
-        local cont = AcquireFS(host, "GameFontDisableSmall")
+        local cont = AcquireFS(host, "BlackacreFont_GameFontDisableSmall")
         cont:SetPoint("TOPLEFT", padLeft, yTop)
         cont:SetText("(continued)")
         Graphite(cont)
-        yTop = yTop - 18
+        yTop = yTop - LEAF.CONT_H
     end
 
     local bodyScroll, bodyEdit = AcquireBodyScroll(host, leafSide)
     bodyScroll:SetPoint("TOPLEFT", 10, yTop)
-    bodyScroll:SetPoint("BOTTOMRIGHT", -14, 44)
+    bodyScroll:SetPoint("BOTTOMRIGHT", -14, LEAF.BODY_BOTTOM)
     bodyScroll:SetScript("OnMouseUp", BodyScroll_OnMouseUp)
     AddKid(host, bodyScroll)
 
@@ -2469,7 +2096,7 @@ local function RenderEntryLeaf(host, leafData, leafSide)
     Blackacre.UI.Theme.ApplyReadableBodyFont(bodyEdit, 2 + (entry.fontSizeOffset or 0), entry.fontKey)
     StyleEditLocked(bodyEdit, not editing)
     bodyScroll:SetScrollChild(bodyEdit)
-    bodyEdit:SetWidth(math.max(180, w - 28))
+    bodyEdit:SetWidth(math.max(180, w - LEAF.BODY_TRIM))
     bodyEdit:SetHeight(math.max(360, (host:GetHeight() or 400) - 80))
     bodyEdit._baEntry = entry
     bodyEdit._baIsContinuation = leafData.isContinuation and true or false
@@ -2511,23 +2138,23 @@ end
 --- Draw stickies on left and right entry leaves (by note.leafSide).
 local function PlaceStickiesOnSpread(s, leftHost, rightHost)
     if s.left and s.left.kind == "entry" and s.left.entry then
-        RenderStickyNotes(leftHost, s.left.entry, "left")
+        Book.RenderStickyNotes(leftHost, s.left.entry, "left")
     end
     if s.right and s.right.kind == "entry" and s.right.entry then
-        RenderStickyNotes(rightHost, s.right.entry, "right")
+        Book.RenderStickyNotes(rightHost, s.right.entry, "right")
     end
-    WireLeafRightClickAddNote(leftHost, "left")
-    WireLeafRightClickAddNote(rightHost, "right")
+    Book.WireLeafRightClickAddNote(leftHost, "left")
+    Book.WireLeafRightClickAddNote(rightHost, "right")
 end
 
 ---@param skipRebuild boolean|nil true = use current spreads (caller already rebuilt)
 function Blackacre.Chronicle.UI.RenderSpread(skipRebuild)
     if not journal then return end
-    HideStickyMenu()
-    HideAddNoteMenu()
+    Book.HideStickyMenu()
+    Book.HideAddNoteMenu()
     if journal.tocMenu then journal.tocMenu:Hide() end
     if journal.addMenu then journal.addMenu:Hide() end
-    EndPinMode()
+    Book.EndPinMode()
     if not skipRebuild then
         RebuildSpreads(true)
     end
@@ -2583,15 +2210,11 @@ function Blackacre.Chronicle.UI.SaveSelected()
     Blackacre.Chronicle.UI.RenderSpread()
 end
 
---- Header "Add page": at the end of the book, or right after the page that
---- is open. On the contents pages there is no "this page", so it just adds.
+--- Header "Add page": right after the page that is open, at the end of the book, or at a
+--- page number. On the contents pages there is no "this page", so that choice is greyed.
 function Blackacre.Chronicle.UI.OnAddPageClicked(anchor)
     Blackacre.Chronicle.UI.EnsureBuilt()
     local current = GetSpreadEntry(spreads[spreadIndex])
-    if not current then
-        AddPageAtEnd()
-        return
-    end
     local m = journal.addMenu
     if not m then
         m = CreateFrame("Frame", "BlackacreAddPageMenu", UIParent, "BackdropTemplate")
@@ -2608,21 +2231,31 @@ function Blackacre.Chronicle.UI.OnAddPageClicked(anchor)
         end
         m.afterBtn = Mk(-8, "New page after this one")
         m.endBtn = Mk(-34, "New page at the end")
+        m.atBtn = Mk(-60, "Insert Page At")
+        m.endBtn:SetScript("OnClick", function()
+            m:Hide()
+            PageYear.Ask(AddPageAtEnd)
+        end)
+        m.atBtn:SetScript("OnClick", function()
+            m:Hide()
+            ShowInsertPageAtPopup()
+        end)
         journal.addMenu = m
     end
     FitButtonWidth(m.afterBtn, 180)
     FitButtonWidth(m.endBtn, 180)
-    local w = math.max(m.afterBtn:GetWidth(), m.endBtn:GetWidth())
+    FitButtonWidth(m.atBtn, 180)
+    local w = math.max(m.afterBtn:GetWidth(), m.endBtn:GetWidth(), m.atBtn:GetWidth())
     m.afterBtn:SetWidth(w)
     m.endBtn:SetWidth(w)
-    m:SetSize(w + 16, 64)
+    m.atBtn:SetWidth(w)
+    m:SetSize(w + 16, 90)
+    m.afterBtn:SetEnabled(current ~= nil)
     m.afterBtn:SetScript("OnClick", function()
         m:Hide()
-        InsertPageAfter(current)
-    end)
-    m.endBtn:SetScript("OnClick", function()
-        m:Hide()
-        AddPageAtEnd()
+        if current then
+            PageYear.Ask(function(yearADP) InsertPageAfter(current, yearADP) end)
+        end
     end)
     m:ClearAllPoints()
     m:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -4)
@@ -2662,6 +2295,7 @@ local function BuildUI()
         rightHost = pageParent,
         _baJournalMode = false,
     }
+    Book.journal = journal
 
     if not journal.leftHost or not journal.rightHost then
         local f = CreateFrame("Frame", "BlackacreJournalFallback", UIParent, "BackdropTemplate")
@@ -2676,7 +2310,7 @@ local function BuildUI()
         journal.rightHost:SetPoint("BOTTOMRIGHT", -10, 10)
     end
 
-    BuildStickyMenu()
+    Book.BuildStickyMenu()
     MountToolsOnParentFooter()
 
     StaticPopupDialogs["Blackacre_DELETE_ENTRY"] = {
@@ -2704,7 +2338,7 @@ local function RelevelLeaf(host)
         local k = kids[i]
         local kind = k._baPool
         if kind == "sticky" then
-            SetStickyLevels(k, host)
+            Book.SetStickyLevels(k, host)
         elseif kind == "bodyScroll" then
             k:SetFrameLevel(base + 1)
             k._baEdit:SetFrameLevel(base + 2)

@@ -245,7 +245,7 @@ function Blackacre.TomeHub.GetFrame()
 end
 
 function Blackacre.TomeHub.OnJournalToggle(on)
-    local msg = on and "Journaling is On — edits save automatically" or "Journaling is Off"
+    local msg = on and "Journaling On" or "Journaling is Off"
     if Blackacre.UI and Blackacre.UI.Theme and Blackacre.UI.Theme.Toast then
         Blackacre.UI.Theme.Toast(msg, "tome")
     else
