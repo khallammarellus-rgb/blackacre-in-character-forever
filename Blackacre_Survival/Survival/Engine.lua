@@ -5,7 +5,7 @@ Blackacre.Survival = Blackacre.Survival or {}
 Blackacre.Survival.Engine = {}
 Blackacre.Survival.Engine.BUILD = "2026-09-20-stacks"
 
-local time, tostring, tonumber = time, tostring, tonumber
+local time, tostring, tonumber, format = time, tostring, tonumber, string.format
 local UnitRace, CreateFrame = UnitRace, CreateFrame
 local C_Timer = C_Timer
 -- Forever has the C_ namespaced versions (APIDocumentationGenerated), so the
@@ -14,6 +14,9 @@ local GetContainerNumSlots = C_Container.GetContainerNumSlots
 local GetContainerItemID = C_Container.GetContainerItemID
 local GetContainerItemLink = C_Container.GetContainerItemLink
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
+local GetItemSpell = C_Item.GetItemSpell
+local IsItemDataCachedByID = C_Item.IsItemDataCachedByID
+local RequestLoadItemDataByID = C_Item.RequestLoadItemDataByID
 local GetSpellName = C_Spell.GetSpellName
 
 local TICK_SEC = 15
@@ -51,13 +54,28 @@ local ZERO_TOAST = {
     exposure = "The environment turns against you",
 }
 
-local FOOD_HINTS = {
-    "food", "feast", "meal", "banquet", "well fed", "stew", "soup", "roast",
-    "bread", "pie", "cake", "sausage", "fish", "seafood", "haunch", "ribs",
-}
-local DRINK_HINTS = {
+-- Whole words only, compiled once. Plain substrings matched "tea" inside
+-- Steak and "ale" inside Scale, so gear and steaks counted as water.
+local function Words(hints)
+    for i = 1, #hints do
+        hints[i] = "%f[%a]" .. hints[i] .. "%f[%A]"
+    end
+    return hints
+end
+-- Used only to tell water from food for a Food & Drink item whose Use spell
+-- isn't recognised (see ProvisionKindAt).
+local DRINK_HINTS = Words({
     "drink", "refreshment", "tea", "coffee", "juice", "water", "wine", "ale",
     "mead", "milk", "waterskin",
+})
+-- What eating and drinking are called, as whole spell names. Exact names, not
+-- words inside names: Conjure Water, Water Walking, Stealth and Fishing must not
+-- refill anything. The value is which meter(s) the spell restores.
+local EAT_SPELLS = {
+    ["food"] = "food",
+    ["drink"] = "drink",
+    ["refreshment"] = "both",
+    ["food & drink"] = "both",
 }
 local CANNIBALIZE_IDS = {
     [20577] = true,
@@ -113,7 +131,7 @@ local function NameHasHint(name, hints)
     if not name or name == "" then return false end
     local lower = name:lower()
     for i = 1, #hints do
-        if lower:find(hints[i], 1, true) then
+        if lower:find(hints[i]) then
             return true
         end
     end
@@ -133,17 +151,84 @@ local function BagMax()
     return 4
 end
 
--- Food & Drink subclass is 5 on Retail/Forever; name-split water vs food.
-local function ClassifyProvision(itemID, itemName)
+local function GetSpellNameSafe(spellID)
+    if not spellID then return "" end
+    return GetSpellName(spellID) or ""
+end
+
+local function IsCannibalize(name, spellID)
+    if spellID and CANNIBALIZE_IDS[spellID] then return true end
+    if name and name:lower():find("cannibalize", 1, true) then return true end
+    return false
+end
+
+-- What a spell does to the meters never changes, so classify each spell id
+-- once: "food", "drink", "both", "cannibalize" or "none". Every cast in combat
+-- lands here; most are "none".
+local spellKind = {}
+local function SpellKind(spellID)
+    local kind = spellID and spellKind[spellID]
+    if kind then return kind end
+    local name = GetSpellNameSafe(spellID)
+    if IsCannibalize(name, spellID) then
+        kind = "cannibalize"
+    else
+        kind = EAT_SPELLS[name:lower()] or "none"
+    end
+    if spellID then spellKind[spellID] = kind end
+    return kind
+end
+
+-- Food & Drink is the game's own item type (subclass 5 on Retail/Forever).
+local function IsFoodDrink(itemID)
     local classID, subclassID, itemSubType = ItemClass(itemID)
-    local name = itemName or ""
-    local sub = tostring(itemSubType or ""):lower()
-    local isFoodDrink = (classID == 0 and subclassID == 5)
-        or sub:find("food", 1, true)
-        or sub:find("drink", 1, true)
-    if NameHasHint(name, DRINK_HINTS) then return "water" end
-    if isFoodDrink or NameHasHint(name, FOOD_HINTS) then return "food" end
-    return nil
+    if classID == 0 and subclassID == 5 then return true end
+    local sub = itemSubType and tostring(itemSubType):lower()
+    return sub ~= nil and (sub:find("food", 1, true) or sub:find("drink", 1, true)) ~= nil
+end
+
+-- Supplies are decided by what using the item does. If its Use spell is an
+-- eating or drinking spell it counts: "food", "water" or "both". That is the
+-- same test the cast handler applies, so an item is supplies exactly when using
+-- it would restore a meter, whatever it is called. An item the game files under
+-- Food & Drink still counts when its Use spell isn't recognised (water if the
+-- name says so, else food). Names alone never count: gear with "ale" in its name
+-- was water. Each item id is classified once, so the rescan allocates nothing.
+local provisionKind = {}   -- item id -> "food", "water", "both" or false
+local provisionWhy = {}    -- item id -> reason text, for /ba survival scan
+local loadState = {}       -- item id -> 1 asked the game for its data, 2 answered
+local engineFrame
+
+local USE_KIND = { food = "food", drink = "water", both = "both" }
+
+local function ProvisionKindAt(itemID, bag, slot)
+    local kind = provisionKind[itemID]
+    if kind ~= nil then return kind end
+
+    local useName, useID = GetItemSpell(itemID)
+    local why
+    kind = useID and USE_KIND[SpellKind(useID)]
+    if kind then
+        why = "Use: " .. useName
+    elseif IsFoodDrink(itemID) then
+        local link = GetContainerItemLink(bag, slot)
+        if not link then return "food" end -- link not ready; don't remember a guess
+        local name = link:match("%[(.-)%]") or ""
+        kind = NameHasHint(name, DRINK_HINTS) and "water" or "food"
+        why = "item type; Use: " .. (useName or "none")
+    end
+    kind = kind or false
+
+    -- An item the game hasn't loaded yet may not report its Use spell. Use what
+    -- we have for now, ask the game for it, and look again when it answers.
+    if IsItemDataCachedByID(itemID) or loadState[itemID] == 2 then
+        provisionKind[itemID], provisionWhy[itemID] = kind, why
+    elseif not loadState[itemID] then
+        loadState[itemID] = 1
+        if engineFrame then engineFrame:RegisterEvent("ITEM_DATA_LOAD_RESULT") end
+        RequestLoadItemDataByID(itemID)
+    end
+    return kind
 end
 
 local function RescanProvisions()
@@ -153,11 +238,11 @@ local function RescanProvisions()
         for slot = 1, slots do
             local itemID = GetContainerItemID(bag, slot)
             if itemID then
-                local link = GetContainerItemLink(bag, slot)
-                local itemName = link and link:match("%[(.-)%]") or ""
-                local kind = ClassifyProvision(itemID, itemName)
-                if kind == "food" then hasFood = true end
-                if kind == "water" then hasWater = true end
+                local kind = ProvisionKindAt(itemID, bag, slot)
+                if kind then
+                    if kind ~= "water" then hasFood = true end
+                    if kind ~= "food" then hasWater = true end
+                end
                 if hasFood and hasWater then
                     provisionsKnown = true
                     return
@@ -320,35 +405,28 @@ function Blackacre.Survival.Engine.SetEnabled(on)
     end
 end
 
-local function GetSpellNameSafe(spellID)
-    if not spellID then return "" end
-    return GetSpellName(spellID) or ""
-end
-
-local function IsCannibalize(name, spellID)
-    if spellID and CANNIBALIZE_IDS[spellID] then return true end
-    if name and name:lower():find("cannibalize", 1, true) then return true end
-    return false
-end
-
--- What a spell does to the meters never changes, so classify each spell id
--- once. Every cast in combat lands here; most are "none".
-local spellKind = {}
-local function SpellKind(spellID)
-    local kind = spellID and spellKind[spellID]
-    if kind then return kind end
-    local name = GetSpellNameSafe(spellID)
-    if IsCannibalize(name, spellID) then
-        kind = "cannibalize"
-    elseif NameHasHint(name, FOOD_HINTS) then
-        kind = "food"
-    elseif NameHasHint(name, DRINK_HINTS) then
-        kind = "drink"
-    else
-        kind = "none"
+--- /ba survival scan: what the add-on sees in the bags and why, so what counts
+--- as food or drink can be checked by eye. Shows each item's real Use spell.
+function Blackacre.Survival.Engine.PrintProvisions()
+    local seen, count = {}, 0
+    for bag = 0, BagMax() do
+        for slot = 1, (GetContainerNumSlots(bag) or 0) do
+            local itemID = GetContainerItemID(bag, slot)
+            if itemID and not seen[itemID] then
+                seen[itemID] = true
+                local kind = ProvisionKindAt(itemID, bag, slot)
+                if kind then
+                    count = count + 1
+                    Blackacre.Print(format("%s: %s (%s)",
+                        GetContainerItemLink(bag, slot) or itemID, kind, provisionWhy[itemID] or "loading"))
+                end
+            end
+        end
     end
-    if spellID then spellKind[spellID] = kind end
-    return kind
+    if count == 0 then Blackacre.Print("No food or drink found in your bags.") end
+    provisionsKnown = false
+    local food, water = Blackacre.Survival.Engine.ScanProvisions()
+    Blackacre.Print(format("Food on hand: %s. Drink on hand: %s.", food and "yes" or "no", water and "yes" or "no"))
 end
 
 local function MaybeClimateToast()
@@ -369,6 +447,7 @@ function Blackacre.Survival.Engine.Init()
     skipClimateToast = true
     lastClimateLabel = CurrentClimate().label
     local frame = CreateFrame("Frame")
+    engineFrame = frame
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
     frame:RegisterEvent("ZONE_CHANGED")
     frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
@@ -388,6 +467,15 @@ function Blackacre.Survival.Engine.Init()
             provisionsKnown = false
             return
         end
+        if event == "ITEM_DATA_LOAD_RESULT" then
+            -- Other add-ons ask for items too; only react to the ones we asked for.
+            local itemID = ...
+            if loadState[itemID] == 1 then
+                loadState[itemID] = 2
+                provisionsKnown = false
+            end
+            return
+        end
         if event == "UNIT_SPELLCAST_SUCCEEDED" then
             local unitTarget, _, spellID = ...
             if unitTarget ~= "player" then return end
@@ -397,12 +485,10 @@ function Blackacre.Survival.Engine.Init()
             if not s.enabled then return end
             if kind == "cannibalize" then
                 s.hunger = 100
-            elseif kind == "food" then
-                if not IsUndead() then
-                    s.hunger = 100
-                end
             else
-                s.thirst = 100
+                -- "food", "drink" or "both"
+                if kind ~= "drink" and not IsUndead() then s.hunger = 100 end
+                if kind ~= "food" then s.thirst = 100 end
             end
             if Blackacre.Survival.UI and Blackacre.Survival.UI.Refresh then
                 Blackacre.Survival.UI.Refresh()

@@ -922,6 +922,9 @@ function addon:OnInitialize()
 
     ClearLegacyCharDB()
 
+    -- Copy this character's data before the other packages start up and touch it.
+    if Blackacre.Backup then Blackacre.Backup.OnLogin() end
+
     Blackacre._databaseReady = true
     Blackacre.InitializePackages()
 
@@ -1148,6 +1151,12 @@ SlashCmdList["BLACKACRE"] = function(msg)
         else
             NeedPackage(PKG_SURVIVAL, "Survival")
         end
+    elseif msg == "survival scan" or msg == "provisions" then
+        if Blackacre.Survival and Blackacre.Survival.Engine then
+            Blackacre.Survival.Engine.PrintProvisions()
+        else
+            NeedPackage(PKG_SURVIVAL, "Survival")
+        end
     elseif msg == "survival on" then
         if Blackacre.Survival and Blackacre.Survival.Engine then
             Blackacre.Survival.Engine.SetEnabled(true)
@@ -1175,6 +1184,8 @@ SlashCmdList["BLACKACRE"] = function(msg)
         OpenBackstory(nil, "Backstory")
     elseif msg == "export profile" then
         Blackacre.ExportProfileBackup()
+    elseif msg == "backup" or msg == "backups" or msg == "restore" then
+        Blackacre.Backup.ShowWindow()
     elseif msg == "export" then
         if Blackacre.Share and Blackacre.Share.Export then
             Blackacre.Share.Export.CopyToClipboard()

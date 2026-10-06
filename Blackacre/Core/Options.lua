@@ -472,6 +472,10 @@ local function BuildOptions()
                         type = "execute", name = "Export full profile backup", order = 5,
                         func = function() Blackacre.ExportProfileBackup() end,
                     },
+                    restore = {
+                        type = "execute", name = "Restore or import a backup...", order = 6,
+                        func = function() Blackacre.Backup.ShowWindow() end,
+                    },
                 },
             },
             credits = {

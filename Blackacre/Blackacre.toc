@@ -7,7 +7,7 @@
 ## X-License: MIT
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## SavedVariables: BlackacreDB, InCharacterDB, BlackacreAceDB, BlackacreProfiles
-## SavedVariablesPerCharacter: BlackacreCharDB, InCharacterCharDB
+## SavedVariablesPerCharacter: BlackacreCharDB, InCharacterCharDB, BlackacreSafetyDB
 ## LoadSavedVariablesFirst: 1
 ## Category-enUS: Roleplay
 ## X-Website: https://github.com/khallammarellus-rgb/blackacre-in-character-forever

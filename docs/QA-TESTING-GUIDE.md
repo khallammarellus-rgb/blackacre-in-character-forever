@@ -73,6 +73,22 @@ Use when debugging comms, bulletins, beacons, or peer data exchange.
 
 ---
 
+### Suite D: Backups & Data Safety
+Use after any change to saved data, and before releasing an update. Open the Backups window with `/ba restore` (also in Settings → Profiles → "Restore or import a backup...").
+
+| # | Check | Standard Criteria | Pass? |
+|---|-------|-------------------|:-----:|
+| **D1** | Automatic Backup | After a first login, wait about 15 seconds, then open `/ba restore`: one row appears ("First backup", with the right page and quest counts) | [ ] |
+| **D2** | Quiet When Unchanged | `/reload` again without writing anything: no new row is added | [ ] |
+| **D3** | Restore | Write a new page, `/reload`. In `/ba restore`, press Restore on the older row and confirm: the game reloads and the new page is gone, the older pages and the Quest Index are intact | [ ] |
+| **D4** | Undo A Restore | After D3, open `/ba restore`: a "Before restoring..." row is there. Restore it: the new page returns | [ ] |
+| **D5** | Export And Import | Export backup text, copy it, save it somewhere. Delete a page. In the window paste the text into the Import box and press Import, confirm: the page is back | [ ] |
+| **D6** | Bad Text Refused | Paste `hello` (or half of a backup) into the Import box and press Import: a message says it isn't a valid backup, nothing changes | [ ] |
+| **D7** | Survives An Update | Install a newer version over the old one, log in: pages and the Quest Index are all there, and the Backups window shows a "Before update to ..." row if anything had changed | [ ] |
+| **D8** | No Hitch | Logging in with a large journal never freezes the screen, and fighting right after login is not affected | [ ] |
+
+---
+
 ## 3. Owner Pass/Fail Reply Template
 
 Copy, fill, and send when reporting test results:
