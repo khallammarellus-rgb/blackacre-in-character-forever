@@ -12,6 +12,8 @@ local INDENT = 22      -- child rows
 local LINE_X = 11      -- tree line column (center of the +/- box)
 local HEADER_H = 30     -- clean top bar
 local TOOLBAR_H = 24    -- Filter + collapse-arrow row above the list
+local SEARCH_H = 20     -- search box under the toolbar
+local SEARCH_DELAY = 0.3 -- seconds of no typing before the list is searched
 local FOOTER_H = 30     -- Import row (left) / page tools row (right)
 local PAGE_PAD_X = 26   -- keeps parchment text off the corner/edge art
 local PAGE_PAD_TOP = 24
@@ -29,6 +31,20 @@ local pages = {}       -- heading, text, heading, text ...
 local underway = {}
 local chainMembers, chainLast = {}, {}
 local firstShow = true
+
+-- Which list is open: this character's ("char") or the account's warband
+-- quests ("warband"). Both lists share the window; only the source changes.
+local tab = "char"
+
+local function ListOrder()
+    if tab == "warband" then return Blackacre.QuestLog.WarbandOrder() end
+    return Blackacre.QuestLog.CompletedOrder()
+end
+
+local function ListGet(id)
+    if tab == "warband" then return Blackacre.QuestLog.GetWarband(id) end
+    return Blackacre.QuestLog.Get(id)
+end
 
 local function Color(name)
     return Blackacre.UI.Theme.Colors[name]
@@ -76,16 +92,68 @@ local function AddItem(kind, rec, extra)
     return it
 end
 
+-- Search: a quest matches when every term appears in its name or its words
+-- (its own, or the shared quest text), ignoring case. Plain words match
+-- anywhere, even inside a longer word ("hem" finds Hemet); a "quoted phrase"
+-- matches only as written, whole words in that order ("Hemet" finds Hemet,
+-- not Hemets). While searching, chains are flattened so a match inside a
+-- chain shows on its own.
+local query = ""   -- the box's text, lower-case; "" when empty
+local terms = {}   -- { text, pattern } per word or quoted phrase (pattern = exact)
+
+local function EscapePattern(s)
+    return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"))
+end
+
+local function ParseQuery()
+    for i = #terms, 1, -1 do terms[i] = nil end
+    -- Only a closed pair of quotes makes a phrase exact; a quote left open is
+    -- ignored and its words are searched plainly.
+    local rest = query:gsub('"([^"]*)"', function(phrase)
+        phrase = strtrim(phrase)
+        if phrase ~= "" then
+            -- Word edges only where the phrase starts or ends with a letter or
+            -- digit (Lua's %w is ASCII, so accented edges match as written).
+            local pattern = EscapePattern(phrase)
+            if phrase:find("^%w") then pattern = "%f[%w]" .. pattern end
+            if phrase:find("%w$") then pattern = pattern .. "%f[%W]" end
+            terms[#terms + 1] = { text = phrase, pattern = pattern }
+        end
+        return " "
+    end)
+    for word in rest:gsub('"', " "):gmatch("%S+") do
+        terms[#terms + 1] = { text = word }
+    end
+end
+
+local function TermIn(text, term)
+    if not text then return false end
+    text = text:lower()
+    if term.pattern then return text:find(term.pattern) ~= nil end
+    return text:find(term.text, 1, true) ~= nil
+end
+
+local function Matches(rec)
+    for _, term in ipairs(terms) do
+        if not (TermIn(rec.title, term) or TermIn(rec.startText, term) or TermIn(rec.objective, term)
+            or TermIn(rec.progressText, term) or TermIn(rec.endText, term)
+            or Blackacre.QuestText.Contains(rec.id, TermIn, term)) then
+            return false
+        end
+    end
+    return true
+end
+
 local function BuildItems()
     for i = #items, 1, -1 do items[i] = nil end
-    local order = Blackacre.QuestLog.CompletedOrder()
+    local order = ListOrder()
     local filters = GetFilters()
 
     -- Chains: collect completed members in completion order.
     for _, m in pairs(chainMembers) do Wipe(m) end
     Wipe(chainLast)
     for i, id in ipairs(order) do
-        local rec = Blackacre.QuestLog.Get(id)
+        local rec = ListGet(id)
         if rec and rec.chain then
             local m = chainMembers[rec.chain]
             if not m then m = {}; chainMembers[rec.chain] = m end
@@ -97,10 +165,15 @@ local function BuildItems()
     AddItem("section", nil, { label = "Completed" })
     local any = false
     local wantCompleted, wantImported = FilterOn(filters, "completed"), FilterOn(filters, "imported")
+    -- Numbered quests (hidden game trackers with no name) are off unless asked for.
+    local wantUntitled = filters.untitled == true
+    local searching = query ~= ""
     for i, id in ipairs(order) do
-        local rec = Blackacre.QuestLog.Get(id)
-        if rec and ((rec.imported and wantImported) or (not rec.imported and wantCompleted)) then
-            local m = rec.chain and chainMembers[rec.chain]
+        local rec = ListGet(id)
+        if rec and (wantUntitled or not rec.untitled)
+            and ((rec.imported and wantImported) or (not rec.imported and wantCompleted))
+            and (not searching or Matches(rec)) then
+            local m = not searching and rec.chain and chainMembers[rec.chain]
             if m and #m > 1 then
                 -- The chain appears once, where its final quest was finished.
                 if chainLast[rec.chain] == i then
@@ -119,14 +192,18 @@ local function BuildItems()
         end
     end
     if not any then
-        AddItem("empty", nil, { label = "No quests match your filters." })
+        AddItem("empty", nil, { label = searching and "No quests match your search." or "No quests match your filters." })
     end
 
-    if FilterOn(filters, "inProgress") then
+    if tab == "char" and FilterOn(filters, "inProgress") then
         Blackacre.QuestLog.Underway(underway)
-        if #underway > 0 then
-            AddItem("section", nil, { label = "In Progress" })
-            for _, rec in ipairs(underway) do
+        local header = false
+        for _, rec in ipairs(underway) do
+            if not searching or Matches(rec) then
+                if not header then
+                    header = true
+                    AddItem("section", nil, { label = "In Progress" })
+                end
                 AddItem("leaf", rec)
             end
         end
@@ -154,17 +231,45 @@ local function ToggleClick(self)
     end
 end
 
+--- "Completed 24 October, 8:42 PM by Name", or for a quest that was dropped
+--- before it was finished, "Started" and the day it was taken up.
+local function DoneLine(rec)
+    if rec.setAside then
+        return "Started " .. Blackacre.QuestLog.StampText(rec.startStamp or rec.stamp)
+    end
+    return "Completed " .. Blackacre.QuestLog.StampText(rec.stamp) .. (rec.by and (" by " .. rec.by) or "")
+end
+
 local function RowEnter(self)
     local it = self.item
     if not (it and it.rec) then return end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:AddLine(it.rec.title)
     if it.rec.imported then
-        GameTooltip:AddLine("Finished before this journal", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(it.rec.warband and "Finished by your warband" or "Finished before this journal", 0.8, 0.8, 0.8)
     elseif it.rec.completedAt then
-        GameTooltip:AddLine("Completed " .. Blackacre.QuestLog.StampText(it.rec.stamp), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(DoneLine(it.rec), 0.8, 0.8, 0.8)
     else
         GameTooltip:AddLine("In Progress", 0.8, 0.8, 0.8)
+    end
+    if it.rec.retired then
+        local c = Color("retiredQuest")
+        GameTooltip:AddLine("Retired Quest", c[1], c[2], c[3])
+    end
+    -- Warband records read their words from the shared store, so the source does too.
+    local src = it.rec.warband and Blackacre.QuestText.Lookup(it.rec.id) or it.rec
+    if src.textFrom then
+        if src.textFromRealm then
+            -- Another player: "Name-Realm".
+            local c = Color("textFromPlayer")
+            GameTooltip:AddLine("Text retrieved from player " .. src.textFrom .. "-" .. src.textFromRealm,
+                c[1], c[2], c[3])
+        else
+            -- One of this account's characters: "Name-Warband".
+            local c = Color("textFromWarband")
+            GameTooltip:AddLine("Text retrieved from your warband: " .. src.textFrom .. "-Warband",
+                c[1], c[2], c[3])
+        end
     end
     if it.kind == "header" then
         GameTooltip:AddLine((it.count - 1) .. " earlier quest(s) in this chain", 0.7, 0.7, 0.7)
@@ -324,7 +429,7 @@ local function ResizeTextHost()
 end
 
 local function RenderDetail()
-    local rec = selectedId and Blackacre.QuestLog.Get(selectedId)
+    local rec = selectedId and ListGet(selectedId)
     if not rec then
         detail.title:SetText("Quest Index")
         detail.meta:SetText("Choose a quest from your history.")
@@ -340,9 +445,10 @@ local function RenderDetail()
     detail.title:SetText(rec.title)
     local meta
     if rec.imported then
-        meta = "Finished before this journal (placed by level" .. (rec.level and (", level " .. rec.level) or "") .. ")"
+        meta = (rec.warband and "Finished by your warband" or "Finished before this journal")
+            .. " (placed by level" .. (rec.level and (", level " .. rec.level) or "") .. ")"
     else
-        meta = rec.completedAt and ("Completed " .. Blackacre.QuestLog.StampText(rec.stamp)) or "In Progress"
+        meta = rec.completedAt and DoneLine(rec) or "In Progress"
     end
     if rec.zone and rec.zone ~= "" then meta = meta .. "  ·  " .. rec.zone end
     local giver = rec.giverEnd or rec.giver
@@ -370,7 +476,8 @@ local function RenderDetail()
     detail.scroll:SetVerticalScroll(0)
 
     local entry = Blackacre.QuestLog.GetEntry(rec.id)
-    detail.logBtn:SetShown(rec.completedAt ~= nil and entry == nil and not rec.imported)
+    -- Pages are written from the character's own list, never the Warband list.
+    detail.logBtn:SetShown(rec.completedAt ~= nil and entry == nil and not rec.warband)
     detail.openBtn:SetShown(entry ~= nil)
 end
 
@@ -399,6 +506,9 @@ local function SetListCollapsed(collapsed)
     -- Filtering only matters while the list is visible; hiding it also
     -- clears the corner the arrow moves into when collapsed.
     frame.filterBtn:SetShown(not collapsed)
+    frame.charTab:SetShown(not collapsed)
+    frame.warbandTab:SetShown(not collapsed)
+    frame.search:SetShown(not collapsed)
     detail:ClearAllPoints()
     -- Expanded: hang off the toolbar's corner (same X as the list's right
     -- edge, same Y as the top of the list column, above the toolbar row).
@@ -428,7 +538,7 @@ local function BuildFilterMenu()
     if filterMenu then return filterMenu end
     local th = Blackacre.UI.Theme
     local m = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    m:SetSize(150, 100)
+    m:SetSize(150, 124)
     th.ApplyChromeMenuFrame(m)
     m:SetFrameStrata("DIALOG")
     m:Hide()
@@ -457,6 +567,12 @@ local function BuildFilterMenu()
     m.completed = MakeCheck("Completed", "completed", -10)
     m.inProgress = MakeCheck("In Progress", "inProgress", -34)
     m.imported = MakeCheck("Imported", "imported", -58)
+    m.untitled = MakeCheck("Numbered", "untitled", -82)
+    -- Off by default, so this one stores true/nil instead of nil/false.
+    m.untitled:SetScript("OnClick", function(self)
+        GetFilters().untitled = self:GetChecked() or nil
+        Refresh()
+    end)
     filterMenu = m
     return m
 end
@@ -468,6 +584,7 @@ local function ToggleFilterMenu(anchor)
     m.completed:SetChecked(FilterOn(filters, "completed"))
     m.inProgress:SetChecked(FilterOn(filters, "inProgress"))
     m.imported:SetChecked(FilterOn(filters, "imported"))
+    m.untitled:SetChecked(filters.untitled == true)
     m:ClearAllPoints()
     m:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -4)
     m:Show()
@@ -552,6 +669,36 @@ local function Build()
     frame.filterBtn:SetPoint("LEFT", 0, 0)
     frame.filterBtn:SetScript("OnClick", function(self) ToggleFilterMenu(self) end)
 
+    -- Tabs (Pass A, plain buttons): this character's quests | the warband's.
+    -- The open tab keeps its highlight lit.
+    local function PaintTabs()
+        frame.charTab[tab == "char" and "LockHighlight" or "UnlockHighlight"](frame.charTab)
+        frame.warbandTab[tab == "warband" and "LockHighlight" or "UnlockHighlight"](frame.warbandTab)
+    end
+    local function OpenTab(which)
+        if tab == which then return end
+        tab = which
+        PaintTabs()
+        local order = ListOrder()
+        selectedId, pageIndex = order[#order], 1
+        Refresh()
+        list.scroll:SetVerticalScroll(list.scroll:GetVerticalScrollRange())
+    end
+    frame.charTab = Button(frame.listToolbar, UnitName("player") or "Character", 86)
+    frame.charTab:SetPoint("LEFT", frame.filterBtn, "RIGHT", 4, 0)
+    frame.charTab:SetScript("OnClick", function() OpenTab("char") end)
+    frame.warbandTab = Button(frame.listToolbar, "Warband", 80)
+    frame.warbandTab:SetPoint("LEFT", frame.charTab, "RIGHT", 2, 0)
+    frame.warbandTab:SetScript("OnClick", function() OpenTab("warband") end)
+    frame.warbandTab:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Warband")
+        GameTooltip:AddLine("Quests that count for every character on your account once one finishes them.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    frame.warbandTab:SetScript("OnLeave", GameTooltip_Hide)
+    PaintTabs()
+
     -- Simple red arrow toggle. Parented to frame.inset (not the toolbar) so
     -- it can travel: sits above the list when shown, slides to the far left
     -- (where the list went) when hidden, and travels back on re-expand.
@@ -575,7 +722,34 @@ local function Build()
     -- History panel (left) — Quest Log frame chrome over the Journeys
     -- background, rotated tall (see ApplyQuestLogListPanel).
     list = CreateFrame("Frame", nil, frame.inset)
-    list:SetPoint("TOPLEFT", frame.listToolbar, "BOTTOMLEFT", 0, -4)
+    -- Search box (Pass A, Blizzard's own search box): quest names and words.
+    -- Typing waits SEARCH_DELAY before rebuilding, so a 5000-quest history
+    -- isn't searched on every key.
+    frame.search = CreateFrame("EditBox", nil, frame.inset, "SearchBoxTemplate")
+    frame.search:SetSize(LIST_W - 8, SEARCH_H)
+    frame.search:SetPoint("TOPLEFT", frame.listToolbar, "BOTTOMLEFT", 6, -2)
+    frame.search.Instructions:SetText("Search quest names and words")
+    local searchTimer
+    frame.search:HookScript("OnTextChanged", function(self)
+        if searchTimer then searchTimer:Cancel() end
+        searchTimer = C_Timer.NewTimer(SEARCH_DELAY, function()
+            searchTimer = nil
+            local text = strtrim(self:GetText() or ""):lower()
+            if text == query then return end
+            query = text
+            ParseQuery()
+            Refresh()
+        end)
+    end)
+    frame.search:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Search")
+        GameTooltip:AddLine("Use quotations around text or phrases to do exact searches", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    frame.search:HookScript("OnLeave", GameTooltip_Hide)
+
+    list:SetPoint("TOPLEFT", frame.search, "BOTTOMLEFT", -6, -4)
     list:SetPoint("BOTTOMLEFT", frame.inset, "BOTTOMLEFT")
     list:SetWidth(LIST_W)
     th.ApplyQuestLogListPanel(list)

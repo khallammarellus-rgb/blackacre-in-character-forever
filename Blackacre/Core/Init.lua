@@ -1183,7 +1183,11 @@ SlashCmdList["BLACKACRE"] = function(msg)
     elseif msg == "backstory" then
         OpenBackstory(nil, "Backstory")
     elseif msg == "export profile" then
-        Blackacre.ExportProfileBackup()
+        Blackacre.ExportProfileBackup("full")
+    elseif msg == "export tome" then
+        Blackacre.ExportProfileBackup("tome")
+    elseif msg == "export backstory" and Blackacre.Backstory then
+        Blackacre.ExportProfileBackup("backstory")
     elseif msg == "backup" or msg == "backups" or msg == "restore" then
         Blackacre.Backup.ShowWindow()
     elseif msg == "export" then
@@ -1243,6 +1247,12 @@ SlashCmdList["BLACKACRE"] = function(msg)
         else
             Blackacre.Print("Theme skin guide not ready.")
         end
+    elseif msg == "helper" or msg == "tour" or msg == "help" then
+        if Blackacre.Options and Blackacre.Options.Open then
+            Blackacre.Options.Open("helper")
+        end
+    elseif msg == "tourart" then
+        if Blackacre.Tour and Blackacre.Tour.DebugArt then Blackacre.Tour.DebugArt() end
     elseif msg == "config" or msg == "options" or msg == "opt" then
         if Blackacre.Options and Blackacre.Options.Open then
             Blackacre.Options.Open()

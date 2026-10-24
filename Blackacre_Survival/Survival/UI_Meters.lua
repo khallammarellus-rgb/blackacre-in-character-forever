@@ -8,6 +8,7 @@ local panel
 local icons = {}
 local collapsed = false
 local prepared = false -- food or water on hand: show the Prepared icon
+local spirit = false -- dead or a ghost: show Spirit Form, hide Prepared
 
 -- Same as Blizzard's own buff/debuff buttons (BuffFrame): 30px icon, and the
 -- collapse arrow is a 15x30 button holding a 10x16 bag-arrow.
@@ -16,6 +17,11 @@ local ICON_INSET = 2 -- the icon sits inside the round-cornered outline, not und
 local ARROW_SIZE = 15
 local ARROW_H = 30
 local ARROW_ART_W, ARROW_ART_H = 10, 16
+-- Spirit Form wears a disease debuff's border: Blizzard's own atlas
+-- (AuraUtil.lua), drawn 40px around the 30px icon as in BuffFrameTemplates.xml.
+local DISEASE_BORDER = "ui-debuff-border-disease-noicon"
+local DEBUFF_BORDER_SIZE = 40
+local SPIRIT_ICON = { "Spell_Holy_GuardianSpirit" }
 
 local ICONS = {
     hunger = {
@@ -37,8 +43,9 @@ local ICONS = {
 
 -- Why exposure is moving the way it is (Engine.ExposureMode). Open air: no line.
 local EXPOSURE_TIP = {
+    camp = { "At camp: recovering quickly", 0.4, 0.9, 0.4 },
+    cozy = { "By the fire: recovering", 0.4, 0.9, 0.4 },
     rested = { "Resting: recovering", 0.4, 0.9, 0.4 },
-    campfire = { "By the fire: recovering", 0.4, 0.9, 0.4 },
     sheltered = { "Sheltered: holding steady", 0.8, 0.8, 0.8 },
     wet = { "Soaked: draining twice as fast", 0.45, 0.7, 1 },
 }
@@ -131,9 +138,11 @@ local function Layout()
         panel.arrow:ClearAllPoints()
         panel.arrow:SetPoint("CENTER", panel, "CENTER", 0, 0)
     else
-        local prep = prepared and icons.prepared ~= nil
-        if icons.prepared then icons.prepared:SetShown(prep) end
-        local count = prep and 4 or 3
+        -- A spirit has no use for provisions, so Spirit Form takes Prepared's place.
+        local prep = prepared and not spirit
+        icons.prepared:SetShown(prep)
+        icons.spirit:SetShown(spirit)
+        local count = (prep or spirit) and 4 or 3
         local rowW = count * ICON_SIZE + (count - 1) * gap
         panel:SetSize(rowW + gap + ARROW_SIZE, ARROW_H)
         icons.hunger:Show()
@@ -146,10 +155,11 @@ local function Layout()
         icons.thirst:SetPoint("LEFT", icons.hunger, "RIGHT", gap, 0)
         icons.exposure:SetPoint("LEFT", icons.thirst, "RIGHT", gap, 0)
         local anchor = icons.exposure
-        if prep then
-            icons.prepared:ClearAllPoints()
-            icons.prepared:SetPoint("LEFT", icons.exposure, "RIGHT", gap, 0)
-            anchor = icons.prepared
+        local extra = (prep and icons.prepared) or (spirit and icons.spirit)
+        if extra then
+            extra:ClearAllPoints()
+            extra:SetPoint("LEFT", icons.exposure, "RIGHT", gap, 0)
+            anchor = extra
         end
         panel.arrow:ClearAllPoints()
         panel.arrow:SetPoint("LEFT", anchor, "RIGHT", gap, 0)
@@ -228,15 +238,53 @@ local function MakeAura(parent, key, label)
         if state then
             local n = math.floor((state[key] or 0) + 0.5)
             GameTooltip:AddLine(n .. " stacks", 0.9, 0.9, 0.9)
-            if state.climate and state.climate.title then
-                GameTooltip:AddLine(state.climate.title .. " climate", 0.85, 0.75, 0.45)
+            if state.spiritForm then
+                -- Paused: no climate, no shelter, nothing moves.
+                GameTooltip:AddLine("You are in spirit form", 0.85, 0.75, 0.45)
+            else
+                if state.climate and state.climate.title then
+                    GameTooltip:AddLine(state.climate.title .. " climate", 0.85, 0.75, 0.45)
+                end
+                local why = key == "exposure" and EXPOSURE_TIP[Blackacre.Survival.Engine.ExposureMode()]
+                if why then GameTooltip:AddLine(why[1], why[2], why[3], why[4]) end
+                if key == "hunger" and state.wellFed then
+                    GameTooltip:AddLine("Well Fed: hunger holds steady", 0.4, 0.9, 0.4)
+                elseif key == "thirst" and state.drinking then
+                    GameTooltip:AddLine("Drinking: recovering", 0.4, 0.9, 0.4)
+                end
             end
-            local why = key == "exposure" and EXPOSURE_TIP[Blackacre.Survival.Engine.ExposureMode()]
-            if why then GameTooltip:AddLine(why[1], why[2], why[3], why[4]) end
         end
         GameTooltip:Show()
     end)
     btn:SetScript("OnLeave", GameTooltip_Hide)
+    return btn
+end
+
+-- A status icon beside the meters (Prepared, Spirit Form): no stacks, just a
+-- title and one line of text. Hidden until Layout shows it.
+local function MakeBadge(parent, iconNames, title, text)
+    local btn = CreateFrame("Button", nil, parent)
+    btn:SetSize(ICON_SIZE, ICON_SIZE)
+    btn.icon = btn:CreateTexture(nil, "ARTWORK")
+    btn.icon:SetPoint("TOPLEFT", ICON_INSET, -ICON_INSET)
+    btn.icon:SetPoint("BOTTOMRIGHT", -ICON_INSET, ICON_INSET)
+    ApplyNamedIcon(btn.icon, iconNames)
+    AddIconFrame(btn)
+    btn:RegisterForDrag("LeftButton")
+    btn:SetScript("OnDragStart", function()
+        if panel then panel:StartMoving() end
+    end)
+    btn:SetScript("OnDragStop", function()
+        if panel then panel:StopMovingOrSizing() end
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:SetText(title)
+        GameTooltip:AddLine(text, 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", GameTooltip_Hide)
+    btn:Hide()
     return btn
 end
 
@@ -279,22 +327,33 @@ local function Build()
     icons.thirst = MakeAura(panel, "thirst", "Thirst")
     icons.exposure = MakeAura(panel, "exposure", "Exposure")
 
-    local prep = CreateFrame("Button", nil, panel)
-    prep:SetSize(ICON_SIZE, ICON_SIZE)
-    prep.icon = prep:CreateTexture(nil, "ARTWORK")
-    prep.icon:SetPoint("TOPLEFT", ICON_INSET, -ICON_INSET)
-    prep.icon:SetPoint("BOTTOMRIGHT", -ICON_INSET, ICON_INSET)
-    ApplyNamedIcon(prep.icon, { "inv_misc_food_15", "INV_Misc_Food_15" })
-    AddIconFrame(prep)
-    prep:SetScript("OnEnter", function(self)
+    icons.prepared = MakeBadge(panel, { "inv_misc_food_15", "INV_Misc_Food_15" },
+        "Prepared", "Your preparation keeps you sated.")
+    -- Prepared says how much the provisions on hand slow each meter.
+    icons.prepared:SetScript("OnEnter", function(self)
+        local engine = Blackacre.Survival.Engine
+        local food, water, fTier, wTier = engine.ScanProvisions()
         GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
         GameTooltip:SetText("Prepared")
-        GameTooltip:AddLine("Your preparation keeps you sated.", 0.9, 0.9, 0.9, true)
+        if food then
+            GameTooltip:AddLine("Food on hand: hunger drains " .. engine.TierSlowPct(fTier) .. "% slower", 0.9, 0.9, 0.9, true)
+        end
+        if water then
+            GameTooltip:AddLine("Water on hand: thirst drains " .. engine.TierSlowPct(wTier) .. "% slower", 0.9, 0.9, 0.9, true)
+        end
         GameTooltip:Show()
     end)
-    prep:SetScript("OnLeave", GameTooltip_Hide)
-    prep:Hide()
-    icons.prepared = prep
+
+    local ghost = MakeBadge(panel, SPIRIT_ICON, "Spirit Form",
+        "You are currently traveling in spirit form. Hunger, thirst and exposure are paused,"
+        .. " and you will return to your body hungry and thirsty.")
+    if HasAtlas(DISEASE_BORDER) then
+        ghost.border = ghost:CreateTexture(nil, "OVERLAY", nil, 2)
+        ghost.border:SetSize(DEBUFF_BORDER_SIZE, DEBUFF_BORDER_SIZE)
+        ghost.border:SetPoint("CENTER")
+        ghost.border:SetAtlas(DISEASE_BORDER, false)
+    end
+    icons.spirit = ghost
     Layout()
 end
 
@@ -304,7 +363,7 @@ function Blackacre.Survival.UI.Init()
 end
 
 -- Runs on every survival tick and zone change: re-anchor the row only when
--- the Prepared icon appears or goes, and allocate nothing.
+-- the Prepared or Spirit Form icon appears or goes, and allocate nothing.
 function Blackacre.Survival.UI.Refresh()
     if not panel then return end
     local s = Blackacre.CharDB and Blackacre.CharDB.survival
@@ -315,13 +374,19 @@ function Blackacre.Survival.UI.Refresh()
     panel:Show()
     local hasFood, hasWater = Blackacre.Survival.Engine.ScanProvisions()
     local prep = (hasFood or hasWater) and true or false
-    if prep ~= prepared then
-        prepared = prep
+    local ghost = s.spiritForm == true
+    if prep ~= prepared or ghost ~= spirit then
+        prepared, spirit = prep, ghost
         Layout()
     end
     icons.hunger:SetMeter(s.hunger)
     icons.thirst:SetMeter(s.thirst)
     icons.exposure:SetMeter(s.exposure)
+end
+
+--- One meter icon ("hunger", "thirst", "exposure", "prepared", "spirit"), for the tour to spotlight.
+function Blackacre.Survival.UI.GetIcon(key)
+    return icons[key]
 end
 
 function Blackacre.Survival.UI.Toggle()

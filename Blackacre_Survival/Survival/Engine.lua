@@ -7,6 +7,7 @@ Blackacre.Survival.Engine.BUILD = "2026-09-20-stacks"
 
 local time, tostring, tonumber, format = time, tostring, tonumber, string.format
 local UnitRace, CreateFrame = UnitRace, CreateFrame
+local UnitIsDeadOrGhost, UnitIsFeignDeath = UnitIsDeadOrGhost, UnitIsFeignDeath
 local C_Timer = C_Timer
 -- Forever has the C_ namespaced versions (APIDocumentationGenerated), so the
 -- bag scan binds them once instead of re-checking per slot.
@@ -18,29 +19,62 @@ local GetItemSpell = C_Item.GetItemSpell
 local IsItemDataCachedByID = C_Item.IsItemDataCachedByID
 local RequestLoadItemDataByID = C_Item.RequestLoadItemDataByID
 local GetSpellName = C_Spell.GetSpellName
+local GetItemInfo = C_Item.GetItemInfo
+local GetSpellDescription = C_Spell.GetSpellDescription
+local RequestLoadSpellData = C_Spell.RequestLoadSpellData
+local GetTime, UnitLevel = GetTime, UnitLevel
 
 local TICK_SEC = 15
 local DEBUFF_AT = 10
 local MAX_CATCHUP_SEC = 300
 
--- Exposure depends on where you are (owner rules):
---   rested area (an inn, a city): exposure recovers
---   by a campfire: recovers, a little slower
---   indoors: exposure holds steady
---   in water: exposure drains twice as fast
+-- Exposure depends on where you are (owner rules), first match wins:
+--   at a camp ("Campfire Nearby"): recovers 1 a second
+--   by a fire ("Cozy Fire"): recovers 1 every 5 seconds
+--   rested area (an inn, a city): recovers
+--   indoors: holds steady
+--   in water: drains twice as fast
+local CAMP_RECOVER_PER_MIN = 60
+local COZY_RECOVER_PER_MIN = 12
 local REST_RECOVER_PER_MIN = 5
-local CAMPFIRE_RECOVER_PER_MIN = 3
 local WATER_EXPOSURE_MULT = 2
--- Forever has no campfire API. The vanilla Basic Campfire puts a "Cozy Fire"
--- aura on everyone standing near it. That name isn't in Forever's UI files,
--- so it's matched by name here and still needs confirming in-game.
-local CAMPFIRE_AURAS = { "Cozy Fire" }
+-- Forever's Camps have no add-on API (PLAYER_CAMPING is the logout timer), so
+-- a fire is found by the buff it puts on you, matched by name. Neither name is
+-- in Forever's UI files; the owner read both in-game.
+local CAMP_AURA = "Campfire Nearby"
+local COZY_AURA = "Cozy Fire"
+-- By a fire the meter climbs every second or five, so it's checked that
+-- often while you stay; everywhere else every TICK_SEC is plenty.
+local TICK_FOR_MODE = { camp = 1, cozy = 5 }
 local exposureMode = "open" -- how exposure behaves until the next tick
+
+-- Provisions slow the drain by the best tier in your bags that you're old
+-- enough to eat: food slows hunger, water slows thirst. Forever's food heals
+-- on a fixed ladder (59/234/531/841/1338/2065, then 2452 for the rare top
+-- tier) and water restores 145/420/803/1293/1915/2821, then 4038. Owner's
+-- rates: 10% for tier 1, +5% a tier, and the rare tier 7 jumps to 70%.
+local TIER_SLOW = { 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.70 }
+-- Least amount for tiers 2..7: halfway between ladder steps.
+local HEALTH_STEPS = { 150, 400, 700, 1100, 1700, 2300 }
+local MANA_STEPS = { 280, 600, 1050, 1600, 2400, 3400 }
+local HEALTH_PAT, MANA_PAT = "([%d,]+) health", "([%d,]+) mana"
+-- Vendor and mage food share one Use spell per tier: the fallback when the
+-- spell's text isn't loaded yet or the client isn't in English.
+local FOOD_SPELL_TIER = { [433] = 1, [434] = 2, [435] = 3, [1127] = 4, [1129] = 5, [1131] = 6, [25660] = 7 }
+local DRINK_SPELL_TIER = { [430] = 1, [431] = 2, [432] = 3, [1133] = 4, [1135] = 5, [1137] = 6, [22734] = 7 }
+-- Hunger holds still for as long as this buff lasts.
+local WELL_FED_AURA = "Well Fed"
+local wellFed = false
+-- Thirst climbs 1 a second while you drink; drinking to the end fills it.
+local DRINK_RECOVER_PER_MIN = 60
+local drinking          -- the drink's aura name while you sit and drink, else nil
+local drinkSeen, drinkEnds, drinkStarted = false, 0, 0
 
 local lastClimateLabel = nil
 local skipClimateToast = true
 local undeadKnown, undeadValue
 local hasFood, hasWater = false, false
+local foodTier, waterTier = 0, 0 -- best usable tier on hand, 0 = none
 local provisionsKnown = false
 
 local DEBUFF_TOAST = {
@@ -53,6 +87,7 @@ local ZERO_TOAST = {
     thirst = "Your throat feels dry",
     exposure = "The environment turns against you",
 }
+local RETURN_TOAST = "You return to your body hungry and parched"
 
 -- Whole words only, compiled once. Plain substrings matched "tea" inside
 -- Steak and "ale" inside Scale, so gear and steaks counted as water.
@@ -71,11 +106,15 @@ local DRINK_HINTS = Words({
 -- What eating and drinking are called, as whole spell names. Exact names, not
 -- words inside names: Conjure Water, Water Walking, Stealth and Fishing must not
 -- refill anything. The value is which meter(s) the spell restores.
+-- Forever's cooked (Well Fed) foods all use "Nutritious Food", not "Food",
+-- and the Enriched Manna Biscuit uses its own name (Wowhead's Forever data, 2026-10-11).
 local EAT_SPELLS = {
     ["food"] = "food",
+    ["nutritious food"] = "food",
     ["drink"] = "drink",
     ["refreshment"] = "both",
     ["food & drink"] = "both",
+    ["enriched manna biscuit"] = "both",
 }
 local CANNIBALIZE_IDS = {
     [20577] = true,
@@ -231,8 +270,57 @@ local function ProvisionKindAt(itemID, bag, slot)
     return kind
 end
 
+local function StepTier(amount, steps)
+    local tier = 1
+    for i = 1, #steps do
+        if amount >= steps[i] then tier = i + 1 end
+    end
+    return tier
+end
+
+local function Amount(text, pattern)
+    local n = text:match(pattern)
+    return n and tonumber((n:gsub(",", "")))
+end
+
+-- An item's tier (1-7) as food and as water, read from the number its Use
+-- spell restores ("Restores 841 health over 27 sec."), plus the level needed
+-- to eat it. Learned once per item id, as soon as the item and the spell's
+-- text are both loaded; until then a best guess is used.
+local foodTierOf, waterTierOf, minLevelOf = {}, {}, {}
+local tiersKnown = {}
+local spellWait = {} -- spell id -> true while we wait for its text
+
+local function LearnTiers(itemID, kind)
+    if tiersKnown[itemID] then return end
+    local _, useID = GetItemSpell(itemID)
+    local text = useID and GetSpellDescription(useID) or ""
+    if useID and text == "" and not spellWait[useID] then
+        spellWait[useID] = true
+        if engineFrame then engineFrame:RegisterEvent("SPELL_TEXT_UPDATE") end
+        RequestLoadSpellData(useID)
+    end
+    if kind ~= "water" then
+        local health = Amount(text, HEALTH_PAT)
+        foodTierOf[itemID] = health and StepTier(health, HEALTH_STEPS) or FOOD_SPELL_TIER[useID] or 1
+    end
+    if kind ~= "food" then
+        local mana = Amount(text, MANA_PAT)
+        waterTierOf[itemID] = mana and StepTier(mana, MANA_STEPS) or DRINK_SPELL_TIER[useID] or 1
+    end
+    if IsItemDataCachedByID(itemID) then
+        local _, _, _, _, minLevel = GetItemInfo(itemID)
+        minLevelOf[itemID] = minLevel or 0
+        if text ~= "" or not useID then tiersKnown[itemID] = true end
+    end
+end
+
+-- Every slot is read (not stopping at the first food and water) to find the
+-- best tier. Runs only after the bags change, never on the tick.
 local function RescanProvisions()
     hasFood, hasWater = false, false
+    foodTier, waterTier = 0, 0
+    local level = UnitLevel("player") or 1
     for bag = 0, BagMax() do
         local slots = GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
@@ -240,12 +328,20 @@ local function RescanProvisions()
             if itemID then
                 local kind = ProvisionKindAt(itemID, bag, slot)
                 if kind then
-                    if kind ~= "water" then hasFood = true end
-                    if kind ~= "food" then hasWater = true end
-                end
-                if hasFood and hasWater then
-                    provisionsKnown = true
-                    return
+                    LearnTiers(itemID, kind)
+                    -- Food you aren't old enough to eat doesn't help.
+                    if (minLevelOf[itemID] or 0) <= level then
+                        if kind ~= "water" then
+                            hasFood = true
+                            local t = foodTierOf[itemID] or 1
+                            if t > foodTier then foodTier = t end
+                        end
+                        if kind ~= "food" then
+                            hasWater = true
+                            local t = waterTierOf[itemID] or 1
+                            if t > waterTier then waterTier = t end
+                        end
+                    end
                 end
             end
         end
@@ -253,11 +349,18 @@ local function RescanProvisions()
     provisionsKnown = true
 end
 
+--- hasFood, hasWater, foodTier, waterTier (tiers 1-7, 0 = none on hand).
 function Blackacre.Survival.Engine.ScanProvisions()
     if not provisionsKnown then
         RescanProvisions()
     end
-    return hasFood, hasWater
+    return hasFood, hasWater, foodTier, waterTier
+end
+
+--- How much slower a tier makes the drain, as a whole percent (0 for none).
+function Blackacre.Survival.Engine.TierSlowPct(tier)
+    local slow = TIER_SLOW[tier]
+    return slow and math.floor(slow * 100 + 0.5) or 0
 end
 
 function Blackacre.Survival.GetState()
@@ -276,29 +379,69 @@ function Blackacre.Survival.GetState()
         hasWater = hasWater,
         hideMeters = s.hideMeters,
         undead = IsUndead(),
+        spiritForm = s.spiritForm == true,
+        foodTier = foodTier,
+        waterTier = waterTier,
+        wellFed = wellFed,
+        drinking = drinking ~= nil,
     }
 end
 
-local function NearCampfire()
-    if not (C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName) then return false end
+local function HasBuff(name)
+    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", name, "HELPFUL")
+    return ok and aura ~= nil
+end
+
+-- "camp", "cozy" or nil.
+local function FireNearby()
+    if not (C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName) then return nil end
     -- Aura data can be withheld from add-ons in combat; nobody rests by a fire mid-fight.
-    if UnitAffectingCombat("player") then return false end
-    for i = 1, #CAMPFIRE_AURAS do
-        local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", CAMPFIRE_AURAS[i], "HELPFUL")
-        if ok and aura then return true end
-    end
-    return false
+    if UnitAffectingCombat("player") then return nil end
+    if HasBuff(CAMP_AURA) then return "camp" end
+    if HasBuff(COZY_AURA) then return "cozy" end
+    return nil
 end
 
 local function ReadExposureMode()
+    local fire = FireNearby()
+    if fire then return fire end
     if IsResting() then return "rested" end
-    if NearCampfire() then return "campfire" end
     if IsIndoors() then return "sheltered" end
     if IsSwimming() then return "wet" end
     return "open"
 end
 
---- "rested", "campfire", "sheltered", "wet" or "open" (for the meter tooltip).
+-- Buff data can be withheld from add-ons in combat: keep what we last knew.
+local function ReadWellFed()
+    if UnitAffectingCombat("player") or not (C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName) then
+        return wellFed
+    end
+    return HasBuff(WELL_FED_AURA)
+end
+
+-- Seconds between ticks: every second while drinking or at a camp, every
+-- five by a cozy fire, otherwise TICK_SEC.
+local function Pace()
+    if drinking then return 1 end
+    return TICK_FOR_MODE[exposureMode] or TICK_SEC
+end
+
+local ticker, tickEvery
+local CheckDrink -- defined below Tick
+local function OnTicker()
+    CheckDrink()
+    Blackacre.Survival.Engine.Tick()
+end
+
+-- The ticker is only rebuilt when the pace changes (a fire, or a drink).
+local function SetTickRate(sec)
+    if sec == tickEvery then return end
+    if ticker then ticker:Cancel() end
+    tickEvery = sec
+    ticker = C_Timer.NewTicker(sec, OnTicker)
+end
+
+--- "camp", "cozy", "rested", "sheltered", "wet" or "open" (for the meter tooltip).
 function Blackacre.Survival.Engine.ExposureMode()
     return exposureMode
 end
@@ -312,14 +455,16 @@ local function FireCrossing(meter, prev, now)
     end
 end
 
--- Also called the moment you enter or leave a rested area or a building, so
--- the time before the change is charged at the old rate, not the new one.
+-- Also called the moment you enter or leave a rested area, a building or a
+-- fire, so the time before the change is charged at the old rate, not the new one.
 function Blackacre.Survival.Engine.Tick()
     local s = EnsureDB()
     -- The interval that just ended ran under the mode read at its start.
-    local mode = exposureMode
+    local mode, fed, sipping = exposureMode, wellFed, drinking
     exposureMode = ReadExposureMode()
-    if not s.enabled then
+    wellFed = ReadWellFed()
+    SetTickRate(Pace())
+    if not s.enabled or s.spiritForm then
         s.lastTick = time()
         return
     end
@@ -333,7 +478,7 @@ function Blackacre.Survival.Engine.Tick()
 
     local minutes = elapsed / 60
     local climate = CurrentClimate()
-    local hasFood, hasWater = Blackacre.Survival.Engine.ScanProvisions()
+    Blackacre.Survival.Engine.ScanProvisions() -- brings foodTier / waterTier up to date
 
     local prevH, prevT, prevE = s.hunger, s.thirst, s.exposure
     local hungerLoss = (climate.hunger or 1) * minutes
@@ -345,12 +490,16 @@ function Blackacre.Survival.Engine.Tick()
         thirstLoss = thirstLoss * boons.Mult("survival.thirst.drain")
         exposureLoss = exposureLoss * boons.Mult("survival.exposure.drain")
     end
-    if hasFood then hungerLoss = 0 end
-    if hasWater then thirstLoss = 0 end
-    if mode == "rested" then
+    if foodTier > 0 then hungerLoss = hungerLoss * (1 - TIER_SLOW[foodTier]) end
+    if waterTier > 0 then thirstLoss = thirstLoss * (1 - TIER_SLOW[waterTier]) end
+    if fed then hungerLoss = 0 end
+    if sipping then thirstLoss = -DRINK_RECOVER_PER_MIN * minutes end
+    if mode == "camp" then
+        exposureLoss = -CAMP_RECOVER_PER_MIN * minutes
+    elseif mode == "cozy" then
+        exposureLoss = -COZY_RECOVER_PER_MIN * minutes
+    elseif mode == "rested" then
         exposureLoss = -REST_RECOVER_PER_MIN * minutes
-    elseif mode == "campfire" then
-        exposureLoss = -CAMPFIRE_RECOVER_PER_MIN * minutes
     elseif mode == "sheltered" then
         exposureLoss = 0
     elseif mode == "wet" then
@@ -365,6 +514,84 @@ function Blackacre.Survival.Engine.Tick()
     FireCrossing("thirst", prevT, s.thirst)
     FireCrossing("exposure", prevE, s.exposure)
 
+    if Blackacre.Survival.UI and Blackacre.Survival.UI.Refresh then
+        Blackacre.Survival.UI.Refresh()
+    end
+end
+
+-- Standing up early keeps the sips taken; drinking until the drink's own
+-- timer runs out fills thirst.
+local function StopDrinking()
+    Blackacre.Survival.Engine.Tick() -- settle the sips so far
+    local finished = drinkSeen and drinkEnds > 0 and GetTime() >= drinkEnds - 0.5
+    drinking = nil
+    local s = EnsureDB()
+    if finished and s.enabled and not s.spiritForm then s.thirst = 100 end
+    SetTickRate(Pace())
+    if Blackacre.Survival.UI and Blackacre.Survival.UI.Refresh then
+        Blackacre.Survival.UI.Refresh()
+    end
+end
+
+-- While drinking: note when the drink will end, and stop once its buff is
+-- gone. A drink whose buff never shows within 3 seconds stops too.
+CheckDrink = function()
+    if not drinking then return end
+    local getAura = C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName
+    local ok, aura = false, nil
+    if getAura then ok, aura = pcall(getAura, "player", drinking, "HELPFUL") end
+    if ok and aura then
+        drinkSeen = true
+        drinkEnds = aura.expirationTime or 0
+    elseif drinkSeen or GetTime() - drinkStarted > 3 then
+        StopDrinking()
+    end
+end
+
+-- The drink's buff carries the Use spell's name ("Drink", "Refreshment").
+local function StartDrinking(spellID)
+    Blackacre.Survival.Engine.Tick() -- settle thirst so far at the old rate
+    drinking = GetSpellNameSafe(spellID)
+    drinkSeen, drinkEnds, drinkStarted = false, 0, GetTime()
+    SetTickRate(Pace())
+end
+
+--- True while the Well Fed buff holds hunger still.
+function Blackacre.Survival.Engine.IsWellFed()
+    return wellFed
+end
+
+--- True while you sit and drink.
+function Blackacre.Survival.Engine.IsDrinking()
+    return drinking ~= nil
+end
+
+local function IsSpirit()
+    if not UnitIsDeadOrGhost("player") then return false end
+    -- A hunter playing dead is still alive.
+    return not (UnitIsFeignDeath and UnitIsFeignDeath("player"))
+end
+
+-- Dead or a ghost: a spirit doesn't hunger, thirst or feel the weather, so
+-- every meter stops. Back in your body you wake starved and parched, and
+-- exposure carries on from where it stopped. The flag is saved, so a
+-- resurrection during a loading screen or a /reload is still caught.
+local function UpdateSpiritForm()
+    local s = EnsureDB()
+    local spirit = IsSpirit()
+    if spirit == (s.spiritForm == true) then return end
+    if spirit then
+        -- Charge the time before death at the living rate, then stop.
+        Blackacre.Survival.Engine.Tick()
+        s.spiritForm = true
+    else
+        s.spiritForm = nil
+        s.lastTick = time() -- the time spent dead costs nothing
+        if s.enabled then
+            s.hunger, s.thirst = 0, 0
+            Toast(RETURN_TOAST)
+        end
+    end
     if Blackacre.Survival.UI and Blackacre.Survival.UI.Refresh then
         Blackacre.Survival.UI.Refresh()
     end
@@ -417,16 +644,21 @@ function Blackacre.Survival.Engine.PrintProvisions()
                 local kind = ProvisionKindAt(itemID, bag, slot)
                 if kind then
                     count = count + 1
-                    Blackacre.Print(format("%s: %s (%s)",
-                        GetContainerItemLink(bag, slot) or itemID, kind, provisionWhy[itemID] or "loading"))
+                    LearnTiers(itemID, kind)
+                    Blackacre.Print(format("%s: %s (%s), tier %s, needs level %s",
+                        GetContainerItemLink(bag, slot) or itemID, kind, provisionWhy[itemID] or "loading",
+                        tostring(kind == "water" and waterTierOf[itemID] or foodTierOf[itemID] or "?"),
+                        tostring(minLevelOf[itemID] or "?")))
                 end
             end
         end
     end
     if count == 0 then Blackacre.Print("No food or drink found in your bags.") end
     provisionsKnown = false
-    local food, water = Blackacre.Survival.Engine.ScanProvisions()
-    Blackacre.Print(format("Food on hand: %s. Drink on hand: %s.", food and "yes" or "no", water and "yes" or "no"))
+    local food, water, fTier, wTier = Blackacre.Survival.Engine.ScanProvisions()
+    local pct = Blackacre.Survival.Engine.TierSlowPct
+    Blackacre.Print(format("Food on hand: %s (hunger %d%% slower). Drink on hand: %s (thirst %d%% slower).",
+        food and "yes" or "no", pct(fTier), water and "yes" or "no", pct(wTier)))
 end
 
 local function MaybeClimateToast()
@@ -453,18 +685,50 @@ function Blackacre.Survival.Engine.Init()
     frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     frame:RegisterEvent("ZONE_CHANGED_INDOORS")
     frame:RegisterEvent("PLAYER_UPDATE_RESTING")
+    -- Dying, releasing (ALIVE also fires on a res taken at the corpse) and the
+    -- ghost's return. Each one re-reads the player, so order doesn't matter.
+    frame:RegisterEvent("PLAYER_DEAD")
+    frame:RegisterEvent("PLAYER_ALIVE")
+    frame:RegisterEvent("PLAYER_UNGHOST")
+    -- A new level can make food in the bags old enough to eat.
+    frame:RegisterEvent("PLAYER_LEVEL_UP")
     -- One event after the bag settles, not BAG_UPDATE per slot.
     if not pcall(frame.RegisterEvent, frame, "BAG_UPDATE_DELAYED") then
         frame:RegisterEvent("BAG_UPDATE")
     end
     if frame.RegisterUnitEvent then
         frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+        frame:RegisterUnitEvent("UNIT_AURA", "player")
     else
         frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+        frame:RegisterEvent("UNIT_AURA")
     end
     frame:SetScript("OnEvent", function(_, event, ...)
-        if event == "BAG_UPDATE_DELAYED" or event == "BAG_UPDATE" then
+        if event == "UNIT_AURA" then
+            -- Only fires, Well Fed and a drink matter here. In combat the
+            -- fire and Well Fed reads are a single check each, so a fight's
+            -- stream of aura changes costs next to nothing.
+            if ... ~= "player" then return end
+            CheckDrink()
+            local fire = FireNearby()
+            local was = TICK_FOR_MODE[exposureMode] and exposureMode or nil
+            if fire ~= was or ReadWellFed() ~= wellFed then
+                -- Something changed: settle the time so far, then the new rate starts now.
+                Blackacre.Survival.Engine.Tick()
+            end
+            return
+        end
+        if event == "BAG_UPDATE_DELAYED" or event == "BAG_UPDATE" or event == "PLAYER_LEVEL_UP" then
             provisionsKnown = false
+            return
+        end
+        if event == "SPELL_TEXT_UPDATE" then
+            -- Only the food spells we asked about; their tier can now be read.
+            local spellID = ...
+            if spellWait[spellID] then
+                spellWait[spellID] = nil
+                provisionsKnown = false
+            end
             return
         end
         if event == "ITEM_DATA_LOAD_RESULT" then
@@ -486,20 +750,28 @@ function Blackacre.Survival.Engine.Init()
             if kind == "cannibalize" then
                 s.hunger = 100
             else
-                -- "food", "drink" or "both"
+                -- "food", "drink" or "both". Eating fills hunger at once;
+                -- drinking fills thirst a sip at a time (see StartDrinking).
+                if kind ~= "food" then StartDrinking(spellID) end
                 if kind ~= "drink" and not IsUndead() then s.hunger = 100 end
-                if kind ~= "food" then s.thirst = 100 end
             end
             if Blackacre.Survival.UI and Blackacre.Survival.UI.Refresh then
                 Blackacre.Survival.UI.Refresh()
             end
             return
         end
+        if event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
+            UpdateSpiritForm()
+            return
+        end
         if event == "PLAYER_ENTERING_WORLD" then
             EnsureDB().lastTick = time()
             exposureMode = ReadExposureMode()
+            wellFed = ReadWellFed()
+            SetTickRate(Pace())
             lastClimateLabel = CurrentClimate().label
             skipClimateToast = false
+            UpdateSpiritForm()
         elseif event == "PLAYER_UPDATE_RESTING" or event == "ZONE_CHANGED_INDOORS" then
             -- Rested or indoors just changed: settle the time so far, then
             -- the new rate starts now. Tick refreshes the meters itself.
@@ -513,7 +785,5 @@ function Blackacre.Survival.Engine.Init()
         end
     end)
 
-    C_Timer.NewTicker(TICK_SEC, function()
-        Blackacre.Survival.Engine.Tick()
-    end)
+    SetTickRate(TICK_SEC)
 end

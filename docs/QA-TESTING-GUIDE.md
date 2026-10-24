@@ -89,6 +89,31 @@ Use after any change to saved data, and before releasing an update. Open the Bac
 
 ---
 
+### Suite E: Survival & Death
+Use after any change to the survival meters. Note the three stack numbers before you start.
+
+| # | Check | Standard Criteria | Pass? |
+|---|-------|-------------------|:-----:|
+| **E1** | Spirit Form Appears | Die: a Spirit Form icon with a yellow-brown (disease) border appears after Exposure; the Prepared icon hides | [ ] |
+| **E2** | Meters Paused | Stay dead or a ghost for 3+ minutes: none of the three numbers move | [ ] |
+| **E3** | Spirit Tooltips | While dead, hovering Hunger, Thirst or Exposure reads "You are in spirit form" (no climate, no "Resting" line); hovering Spirit Form explains the pause | [ ] |
+| **E4** | Return To Body | Take a res (spirit healer, corpse run, or a player's res): Hunger and Thirst read 0, Exposure is where it stopped, one toast "You return to your body hungry and parched", Spirit Form icon gone | [ ] |
+| **E5** | Exposure Resumes | A minute after E4, Exposure drops again at the zone's normal rate | [ ] |
+| **E6** | Ghost Across A Reload | As a ghost, `/reload`: Spirit Form is still there and the meters still don't move | [ ] |
+| **E7** | Feign Death (Hunter) | Feign Death and stand up: no Spirit Form icon, meters untouched | [ ] |
+| **E8** | Camp | Stand in a camp with the "Campfire Nearby" buff: Exposure climbs about 1 every second; tooltip reads "At camp: recovering quickly" | [ ] |
+| **E9** | Cozy Fire | Stand by a fire with only the "Cozy Fire" buff: Exposure climbs 1 every 5 seconds; tooltip reads "By the fire: recovering" | [ ] |
+| **E10** | Leaving The Fire | Walk away from the fire: Exposure stops climbing within a second or two and starts to drop again | [ ] |
+| **E11** | Cooked Food | Eat a cooked (Well Fed) food: Hunger goes to 100 the moment you sit and eat | [ ] |
+| **E12** | Food Tiers | `/ba survival scan` lists each food and water with its tier (1-7) and level; hovering Prepared shows "hunger drains N% slower" (10/15/20/25/30/35, tier 7 = 70%) for the best one you can eat | [ ] |
+| **E13** | Too Young To Eat | Carry only food above your level: Prepared doesn't count it (scan says 0% slower) | [ ] |
+| **E14** | Well Fed | Eat cooked food for 10+ seconds: Hunger tooltip reads "Well Fed: hunger holds steady" and the number doesn't drop until the buff ends | [ ] |
+| **E15** | Drinking | Sit and drink: Thirst climbs about 1 a second; Thirst tooltip reads "Drinking: recovering" | [ ] |
+| **E16** | Finish The Drink | Drink until the drink ends by itself: Thirst jumps to 100 | [ ] |
+| **E17** | Stand Up Early | Stand up mid-drink: Thirst keeps what it gained, no jump to 100 | [ ] |
+
+---
+
 ## 3. Owner Pass/Fail Reply Template
 
 Copy, fill, and send when reporting test results:

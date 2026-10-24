@@ -973,6 +973,10 @@ function Blackacre.Comms.OnCommReceived(prefix, message, distribution, sender)
     if decoded then
         if decoded.opcode == "NSZ" then
             AcceptBulletin(decoded, sender)
+        elseif decoded.opcode == "QT" then
+            if Blackacre.QuestText and Blackacre.QuestText.OnText then
+                Blackacre.QuestText.OnText(sender, decoded)
+            end
         elseif decoded.opcode == "IC_SUM" then
             if Blackacre.Share and Blackacre.Share.OnPeerSummary then
                 Blackacre.Share.OnPeerSummary(sender, decoded)
@@ -994,6 +998,10 @@ function Blackacre.Comms.OnCommReceived(prefix, message, distribution, sender)
         OnHello(fields[2])
     elseif opcode == "SQ" then
         Blackacre.Comms.SendSummaryTo(sender)
+    elseif opcode == "QW" then
+        if Blackacre.QuestText and Blackacre.QuestText.OnWant and fields[2] and fields[3] then
+            Blackacre.QuestText.OnWant(sender, fields[2], fields[3])
+        end
     elseif opcode == "BH" then
         OnBeaconHeartbeat(sender, fields)
     elseif opcode == "BZ" then
@@ -1028,6 +1036,22 @@ Blackacre.Comms.IngestBulletin = AcceptBulletin
 
 function Blackacre.Comms.SendChannelRaw(message, prio)
     return SendOnChannel(message, prio)
+end
+
+---------------------------------------------------------------------------
+-- Quest text between players (Tome's QuestText decides who and what).
+--   QW  "I'm missing the words for these quests": locale, comma-separated
+--       quest ids. Plain text whisper, one message.
+--   QT  one quest's words back, encoded: { opcode, loc, id, t, s, o, p, e }.
+--       BULK priority so it never crowds out anything else.
+---------------------------------------------------------------------------
+function Blackacre.Comms.SendQuestWant(target, locale, ids)
+    SendWhisper(target, "QW" .. SEP .. locale .. SEP .. ids, false, "BULK")
+end
+
+function Blackacre.Comms.SendQuestText(target, payload)
+    payload.opcode = "QT"
+    SendWhisper(target, EncodePayload(payload), false, "BULK")
 end
 
 function Blackacre.Comms.SendSummaryTo(target)

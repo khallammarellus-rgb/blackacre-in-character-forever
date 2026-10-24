@@ -26,6 +26,8 @@ Core\ProfanityFilter.lua
 Core\Comms.lua
 Core\Lifecycle.lua
 Core\ProfileBackup.lua
+UI\Tour.lua
+Data\TourSteps.lua
 Core\Options.lua
 History\History.lua
 UI\Theme.lua

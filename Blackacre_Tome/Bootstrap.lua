@@ -30,6 +30,7 @@ local function InitTome()
     Blackacre.Chronicle.Capture.Init()
     Blackacre.Chronicle.UI.Init()
     Blackacre.QuestLog.Init()
+    Blackacre.QuestText.Init()
     Blackacre.Hardcore.Monitor.Init()
     Blackacre.PvP.AfterAction.Init()
 end

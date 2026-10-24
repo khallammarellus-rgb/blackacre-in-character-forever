@@ -387,6 +387,14 @@ function Blackacre.ToolBox.Toggle()
     end
 end
 
+--- The slot button for a tool ("beacon", "bulletin", ...), for the tour to spotlight.
+function Blackacre.ToolBox.GetButton(id)
+    if not frame then Build() end
+    for _, b in ipairs(buttons) do
+        if b.id == id then return b end
+    end
+end
+
 function Blackacre.ToolBox.Show()
     if not frame then Build() end
     for _, b in ipairs(buttons) do PaintToggle(b) end

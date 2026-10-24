@@ -26,6 +26,7 @@ Chronicle\UI_Chronology.lua
 Chronicle\UI_Stickies.lua
 
 Quests\QuestLog.lua
+Quests\QuestText.lua
 Quests\UI_QuestIndex.lua
 
 Hardcore\Monitor.lua

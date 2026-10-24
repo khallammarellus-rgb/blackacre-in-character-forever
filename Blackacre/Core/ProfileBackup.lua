@@ -3,7 +3,7 @@
 Blackacre = Blackacre or {}
 Blackacre.Backup = Blackacre.Backup or {}
 
-local pairs, type, time, format, tostring, tinsert = pairs, type, time, string.format, tostring, table.insert
+local pairs, ipairs, type, time, format, tostring, tinsert = pairs, ipairs, type, time, string.format, tostring, table.insert
 local C_Timer, date = C_Timer, date
 
 local AceSerializer = LibStub("AceSerializer-3.0")
@@ -21,6 +21,23 @@ local PAYLOAD_PREFIX = "BLACKACRE_PROFILE_V1:"
 local MAX_IMPORT_BYTES = 40 * 1024 * 1024
 
 local box, window
+
+-- What each export carries. "full" is the whole profile; the others carry only
+-- their own parts of the character data, and importing one replaces only those
+-- parts. Backstory's lives in core's saved data like everything else, so it can
+-- be exported even if the Backstory add-on is turned off.
+local KINDS = {
+    full = { format = "BlackacreProfileBackup", title = "Full Profile Backup",
+        what = "journal, Quest Index and character data" },
+    tome = { format = "BlackacreTomeBackup", title = "Tome Backup",
+        keys = { "chronicle", "chronicleStory", "questLog" },
+        what = "journal and Quest Index" },
+    backstory = { format = "BlackacreBackstoryBackup", title = "Backstory Backup",
+        keys = { "family", "identity" },
+        what = "family tree, birthsign and birth details" },
+}
+local KIND_BY_FORMAT = {}
+for key, kind in pairs(KINDS) do KIND_BY_FORMAT[kind.format] = key end
 
 ---------------------------------------------------------------------------
 -- Storage
@@ -216,6 +233,15 @@ local function TakeNow(reason)
     AddSnapshot(rec)
 end
 
+--- A snapshot made right now, before a one-time data repair changes anything.
+--- Returns false (and records why) if it couldn't be made; the caller must then
+--- leave the data alone.
+function Blackacre.Backup.SnapshotNow(reason)
+    local ok, err = pcall(TakeNow, reason)
+    if not ok then Fail(err) end
+    return ok
+end
+
 function Blackacre.Backup.List()
     return Store().snapshots
 end
@@ -247,7 +273,128 @@ local function Apply(data)
     end
 end
 
-local function ApplyAndReload(data, label)
+--- Replace only one kind's parts of the live character data (Tome or Backstory).
+--- The journal keeps its table, as in Apply.
+local function ApplyPart(keys, data)
+    local cd = Blackacre.CharDB
+    for _, key in ipairs(keys) do
+        local old, new = cd[key], data[key]
+        if key == "chronicle" and type(old) == "table" and type(new) == "table" then
+            for k in pairs(old) do old[k] = nil end
+            for k, v in pairs(new) do old[k] = v end
+        else
+            cd[key] = new
+        end
+    end
+end
+
+--- Add every key `dst` doesn't have yet, all the way down. Nothing in `dst` changes.
+local function FillMissing(dst, src)
+    for k, v in pairs(src) do
+        local have = dst[k]
+        if have == nil then
+            dst[k] = v
+        elseif type(have) == "table" and type(v) == "table" then
+            FillMissing(have, v)
+        end
+    end
+end
+
+local QUEST_TEXT_FIELDS = { "startText", "objective", "progressText", "endText", "giver", "giverEnd", "zone" }
+
+--- Merge a Tome backup into the live journal and Quest Index (owner, 2026-10-23:
+--- merge, never replace). Nothing is ever doubled:
+---   pages: matched by id. A page only in the backup is added; a page in both keeps
+---     whichever copy was edited last.
+---   quests: matched by quest id. A quest only in the backup is added in its place by
+---     completion time; a quest in both keeps this character's record and only gains
+---     words or a journal link it was missing. Repeats folded away stay folded.
+---   milestones (chronicleStory): only steps this character hasn't recorded are added.
+--- Returns pages added, pages updated, quests added.
+local function MergeTome(data)
+    local cd = Blackacre.CharDB
+    local added, updated, questsAdded = 0, 0, 0
+
+    cd.chronicle = cd.chronicle or { entries = {} }
+    cd.chronicle.entries = cd.chronicle.entries or {}
+    local entries = cd.chronicle.entries
+    local byId = {}
+    for i, e in ipairs(entries) do
+        if type(e) == "table" and e.id then byId[e.id] = i end
+    end
+    local incoming = type(data.chronicle) == "table" and data.chronicle.entries
+    if type(incoming) == "table" then
+        for _, e in ipairs(incoming) do
+            if type(e) == "table" and e.id then
+                local i = byId[e.id]
+                if not i then
+                    entries[#entries + 1] = e
+                    byId[e.id] = #entries
+                    added = added + 1
+                elseif (e.editedAt or 0) > (entries[i].editedAt or 0) then
+                    entries[i] = e
+                    updated = updated + 1
+                end
+            end
+        end
+    end
+
+    local theirs = type(data.questLog) == "table" and data.questLog
+    if theirs and type(theirs.quests) == "table" then
+        cd.questLog = cd.questLog or { quests = {}, order = {} }
+        local q = cd.questLog
+        q.quests, q.order, q.folded = q.quests or {}, q.order or {}, q.folded or {}
+        if type(theirs.folded) == "table" then FillMissing(q.folded, theirs.folded) end
+        for id, rec in pairs(theirs.quests) do
+            if type(rec) == "table" and not q.folded[id] then
+                local mine = q.quests[id]
+                if not mine then
+                    q.quests[id] = rec
+                    if rec.completedAt then questsAdded = questsAdded + 1 end
+                else
+                    for _, field in ipairs(QUEST_TEXT_FIELDS) do
+                        if mine[field] == nil then mine[field] = rec[field] end
+                    end
+                    if mine.entryId == nil then mine.entryId = rec.entryId end
+                end
+            end
+        end
+        -- Completion order again, oldest first, so added quests sit in their place.
+        local order = {}
+        for id, rec in pairs(q.quests) do
+            if rec.completedAt then order[#order + 1] = id end
+        end
+        table.sort(order, function(a, b)
+            local ta, tb = q.quests[a].completedAt, q.quests[b].completedAt
+            if ta ~= tb then return ta < tb end
+            return a < b
+        end)
+        q.order = order
+    end
+
+    if type(data.chronicleStory) == "table" then
+        cd.chronicleStory = cd.chronicleStory or {}
+        FillMissing(cd.chronicleStory, data.chronicleStory)
+    end
+    return added, updated, questsAdded
+end
+Blackacre.Backup.MergeTome = MergeTome -- for the tests
+
+--- Quest words from a Tome backup go into the account's shared store, filling
+--- only quests it has no words for. Nothing already there is replaced.
+local function MergeQuestText(locale, words)
+    if type(words) ~= "table" or type(locale) ~= "string" or not BlackacreDB then return end
+    BlackacreDB.questText = BlackacreDB.questText or {}
+    local store = BlackacreDB.questText[locale] or {}
+    BlackacreDB.questText[locale] = store
+    for id, saved in pairs(words) do
+        if type(id) == "number" and type(saved) == "table" and store[id] == nil then
+            store[id] = saved
+        end
+    end
+end
+
+local function ApplyAndReload(data, label, apply)
     job = nil
     -- Keep today's data too, so this can be undone. If that fails, change nothing.
     local ok, err = pcall(TakeNow, "Before restoring " .. label)
@@ -256,7 +403,7 @@ local function ApplyAndReload(data, label)
         Blackacre.Print("Couldn't save a copy of your current data first, so nothing was changed.")
         return false
     end
-    Apply(data)
+    if apply then apply() else Apply(data) end
     Blackacre.Print("Backup restored. Reloading to save it...")
     ReloadUI()
     return true
@@ -314,20 +461,72 @@ function Blackacre.Backup.ParseExport(text)
     local compressed = LibDeflate:DecodeForPrint(payload)
     local raw = compressed and LibDeflate:DecompressDeflate(compressed)
     local bundle = Deserialize(raw)
-    if not bundle or bundle.format ~= "BlackacreProfileBackup" or bundle.version ~= 1
-        or not Valid(bundle.characterData) then
-        return nil, "That backup is damaged or incomplete, so nothing was changed."
+    local kind = bundle and bundle.version == 1 and KIND_BY_FORMAT[bundle.format]
+    local damaged = "That backup is damaged or incomplete, so nothing was changed."
+    if not kind then return nil, damaged end
+    if kind == "full" and not Valid(bundle.characterData) then return nil, damaged end
+    if kind == "tome" and not Valid(bundle.data) then return nil, damaged end
+    if kind == "backstory" then
+        local d = bundle.data
+        if type(d) ~= "table" or (d.family ~= nil and type(d.family) ~= "table")
+            or (d.identity ~= nil and type(d.identity) ~= "table") or not (d.family or d.identity) then
+            return nil, damaged
+        end
     end
-    return bundle
+    return bundle, nil, kind
+end
+
+local function FamilyCount(data)
+    local n = 0
+    local people = type(data.family) == "table" and data.family.people
+    if type(people) == "table" then
+        for _ in pairs(people) do n = n + 1 end
+    end
+    return n
+end
+
+--- Ask, then import a Tome or Backstory backup. A Tome backup is merged into the
+--- journal and Quest Index; a Backstory backup replaces the family tree and birth
+--- details. Nothing else is changed either way.
+local function ImportPart(bundle, kindKey)
+    local kind = KINDS[kindKey]
+    local from = format("the %s from %s (profile %s)", kind.title,
+        date("%d %b %Y %H:%M", bundle.exportedAt or 0), tostring(bundle.profileName or "?"))
+    local message
+    if kindKey == "tome" then
+        local pages, quests = Count(bundle.data)
+        message = format("Add to this character's journal and Quest Index from %s: %d pages, %d quests?\n\n"
+            .. "Only what's missing is added; nothing is doubled and nothing you have is removed. "
+            .. "Your current data is saved first as a backup you can restore. The game will reload.",
+            from, pages, quests)
+    else
+        message = format("Replace this character's %s with %s: %d people in the family tree?\n\n"
+            .. "Nothing else is changed. Your current data is saved first as a backup you can restore. The game will reload.",
+            kind.what, from, FamilyCount(bundle.data))
+    end
+    Confirm(message, function()
+        ApplyAndReload(bundle.data, "an imported " .. kind.title, function()
+            if kindKey == "tome" then
+                local added, updated, questsAdded = MergeTome(bundle.data)
+                MergeQuestText(bundle.questTextLocale, bundle.questText)
+                Blackacre.Print(format("Tome backup merged: %d pages added, %d pages updated, %d quests added.",
+                    added, updated, questsAdded))
+            else
+                ApplyPart(kind.keys, bundle.data)
+            end
+        end)
+    end)
+    return true
 end
 
 --- Ask, then import backup text.
 function Blackacre.Backup.ImportText(text)
-    local bundle, err = Blackacre.Backup.ParseExport(text)
+    local bundle, err, kindKey = Blackacre.Backup.ParseExport(text)
     if not bundle then
         Blackacre.Print(err)
         return false
     end
+    if kindKey ~= "full" then return ImportPart(bundle, kindKey) end
     local pages, quests = Count(bundle.characterData)
     local rec = { at = bundle.exportedAt, pages = pages, quests = quests,
         reason = "Exported text from the profile " .. tostring(bundle.profileName or "?") }
@@ -339,8 +538,46 @@ end
 -- Export
 ---------------------------------------------------------------------------
 
+local function Encode(bundle, comment)
+    local serialized = AceSerializer:Serialize(bundle)
+    local payload = PAYLOAD_PREFIX .. LibDeflate:EncodeForPrint(LibDeflate:CompressDeflate(serialized, { level = CHUNK_LEVEL }))
+    -- The text is a valid Lua file, so it can be saved as one outside the game.
+    return "-- " .. comment .. "\nBlackacreProfileBackup = " .. format("%q", payload) .. "\n"
+end
+
+--- A Tome or Backstory backup: only that kind's parts of the character data. A Tome
+--- backup also carries the account's shared quest words in this game language.
+local function BuildPartText(kindKey)
+    local db = Blackacre.db
+    local cd = Blackacre.CharDB
+    if not (db and type(cd) == "table") then return nil end
+    local kind = KINDS[kindKey]
+    local data = {}
+    for _, key in ipairs(kind.keys) do data[key] = cd[key] end
+    local bundle = {
+        format = kind.format,
+        version = 1,
+        profileName = db:GetCurrentProfile(),
+        exportedAt = time(),
+        data = data,
+    }
+    if kindKey == "tome" then
+        local locale = GetLocale()
+        bundle.questTextLocale = locale
+        bundle.questText = BlackacreDB and BlackacreDB.questText and BlackacreDB.questText[locale]
+    end
+    return Encode(bundle, "Blackacre " .. kind.title:lower())
+end
+
 --- The backup as text that is also a valid .lua file. Returns the text and the counts.
-function Blackacre.Backup.BuildExportText()
+--- kindKey: "full" (default), "tome" or "backstory".
+function Blackacre.Backup.BuildExportText(kindKey)
+    if kindKey == "tome" or kindKey == "backstory" then
+        local text = BuildPartText(kindKey)
+        if not text then return nil end
+        if kindKey == "tome" then return text, Count(Blackacre.CharDB) end
+        return text, FamilyCount(Blackacre.CharDB)
+    end
     local db = Blackacre.db
     local profile = db and db.profile
     if not profile then return nil end
@@ -358,11 +595,7 @@ function Blackacre.Backup.BuildExportText()
         settings = settings,
         characterData = profile.characterData,
     }
-    local serialized = AceSerializer:Serialize(bundle)
-    local payload = PAYLOAD_PREFIX .. LibDeflate:EncodeForPrint(LibDeflate:CompressDeflate(serialized, { level = CHUNK_LEVEL }))
-    -- The text is a valid Lua file, so it can be saved as one outside the game.
-    local text = "-- Blackacre full profile backup\nBlackacreProfileBackup = " .. format("%q", payload) .. "\n"
-    return text, Count(profile.characterData)
+    return Encode(bundle, "Blackacre full profile backup"), Count(profile.characterData)
 end
 
 local function BuildBox()
@@ -375,8 +608,8 @@ local function BuildBox()
     Blackacre.UI.Focus.Register(f)
     local title = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalLarge")
     title:SetPoint("TOP", 0, -12)
-    title:SetText("Full Profile Backup")
     Blackacre.UI.Theme.GoldTitle(title)
+    f.title = title
     f.hint = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlightSmall")
     f.hint:SetPoint("TOPLEFT", 16, -36)
     Blackacre.UI.Theme.InkFont(f.hint)
@@ -396,17 +629,27 @@ local function BuildBox()
     return f
 end
 
-function Blackacre.ExportProfileBackup()
-    local text, pages, quests = Blackacre.Backup.BuildExportText()
+--- kindKey: "full" (default), "tome" or "backstory".
+function Blackacre.ExportProfileBackup(kindKey)
+    kindKey = KINDS[kindKey] and kindKey or "full"
+    local text, a, b = Blackacre.Backup.BuildExportText(kindKey)
     if not text then Blackacre.Print("Profile storage is not ready."); return end
+    local kind = KINDS[kindKey]
+    local counts
+    if kindKey == "backstory" then
+        counts = format("%d people in the family tree", a or 0)
+    else
+        counts = format("%d pages, %d quests", a or 0, b or 0)
+    end
     box = box or BuildBox()
-    box.hint:SetText(format("%d pages, %d quests, %d KB. Select all, copy, and save it as a .lua file somewhere safe.",
-        pages or 0, quests or 0, math.ceil(#text / 1024)))
+    box.title:SetText(kind.title)
+    box.hint:SetText(format("%s, %d KB. Select all, copy, and save it as a .lua file somewhere safe.",
+        counts, math.ceil(#text / 1024)))
     box.edit:SetText(text)
     box.edit:HighlightText()
     box:Show()
     box.edit:SetFocus()
-    if Blackacre.UI and Blackacre.UI.Theme then Blackacre.UI.Theme.Toast("Full profile backup ready to copy.") end
+    if Blackacre.UI and Blackacre.UI.Theme then Blackacre.UI.Theme.Toast(kind.title .. " ready to copy.") end
 end
 
 ---------------------------------------------------------------------------
@@ -523,10 +766,24 @@ local function BuildWindow()
     f.note:SetJustifyH("LEFT")
 
     local exportBtn = CreateFrame("Button", nil, f.inset, "UIPanelButtonTemplate")
-    exportBtn:SetSize(190, 22)
+    exportBtn:SetSize(150, 22)
     exportBtn:SetPoint("TOPLEFT", f.note, "BOTTOMLEFT", 0, -10)
-    exportBtn:SetText("Export backup text")
-    exportBtn:SetScript("OnClick", function() Blackacre.ExportProfileBackup() end)
+    exportBtn:SetText("Export everything")
+    exportBtn:SetScript("OnClick", function() Blackacre.ExportProfileBackup("full") end)
+    local tomeBtn = CreateFrame("Button", nil, f.inset, "UIPanelButtonTemplate")
+    tomeBtn:SetSize(150, 22)
+    tomeBtn:SetPoint("LEFT", exportBtn, "RIGHT", 6, 0)
+    tomeBtn:SetText("Export Tome")
+    tomeBtn:SetScript("OnClick", function() Blackacre.ExportProfileBackup("tome") end)
+    -- Only with Backstory installed: the public build never points at an add-on
+    -- the player doesn't have.
+    if Blackacre.Backstory then
+        local backstoryBtn = CreateFrame("Button", nil, f.inset, "UIPanelButtonTemplate")
+        backstoryBtn:SetSize(150, 22)
+        backstoryBtn:SetPoint("LEFT", tomeBtn, "RIGHT", 6, 0)
+        backstoryBtn:SetText("Export Backstory")
+        backstoryBtn:SetScript("OnClick", function() Blackacre.ExportProfileBackup("backstory") end)
+    end
 
     local importLabel = f.inset:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalSmall")
     importLabel:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -10)

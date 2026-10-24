@@ -92,6 +92,35 @@ local function HonorStatusText()
     )
 end
 
+--- Helper tab: one button per tour section. Built from the step registry so a new
+--- section in Data\TourSteps.lua shows up here with no edit.
+local function HelperArgs()
+    -- Relative widths keep the buttons in a tidy grid whatever size the window is:
+    -- three to a row, with the full tour a little wider on its own row.
+    local args = {
+        intro = {
+            type = "description", order = 1, fontSize = "medium",
+            name = "Take a full tour or just get reminded on a specific part below.\n",
+        },
+        all = {
+            type = "execute", order = 2, name = "Full tour",
+            width = "relative", relWidth = 0.5,
+            func = function() Blackacre.Tour.StartFromSettings("all") end,
+        },
+        gap = { type = "header", order = 3, name = "Or just one part" },
+    }
+    local sections = Blackacre.Tour and Blackacre.Tour.sections
+    for i, section in ipairs(sections or {}) do
+        args[section.key] = {
+            type = "execute", order = 10 + i, name = section.label,
+            width = "relative", relWidth = 0.32,
+            disabled = function() return not Blackacre.Tour.IsAvailable(section) end,
+            func = function() Blackacre.Tour.StartFromSettings(section.key) end,
+        }
+    end
+    return args
+end
+
 local function BuildOptions()
     return {
         type = "group",
@@ -103,11 +132,13 @@ local function BuildOptions()
                 order = 1,
                 fontSize = "medium",
             },
+            -- Every section is an entry in the left-hand list (none is inline). Inline
+            -- groups sat above the list and ate the window, leaving the list and the
+            -- pane beside it about 100px tall.
             general = {
                 type = "group",
                 name = "General",
                 order = 2,
-                inline = true,
                 args = {
                     minimap = {
                         type = "toggle",
@@ -216,7 +247,6 @@ local function BuildOptions()
                 type = "group",
                 name = "Journal Settings",
                 order = 3,
-                inline = true,
                 args = {
                     title = {
                         type = "input",
@@ -313,6 +343,20 @@ local function BuildOptions()
                         order = 7,
                         disabled = function() return not Blackacre.QuestLog or Blackacre.QuestLog.IsImporting() end,
                         func = function() Blackacre.QuestLog.ImportCompleted() end,
+                    },
+                    shareQuestText = {
+                        type = "toggle",
+                        name = "Share quest text with other players",
+                        desc = "When you meet another player using this add-on, quietly trade the words of quests one of you is missing. Only quest text is shared, only in your game language, never in combat or instances. Account-wide.",
+                        order = 8,
+                        width = "full",
+                        get = function()
+                            return not (Blackacre.DB and Blackacre.DB.shareQuestText == false)
+                        end,
+                        set = function(_, v)
+                            if not Blackacre.DB then return end
+                            if v then Blackacre.DB.shareQuestText = nil else Blackacre.DB.shareQuestText = false end
+                        end,
                     },
                     promptEveryQuest = {
                         type = "toggle",
@@ -470,13 +514,30 @@ local function BuildOptions()
                     },
                     export = {
                         type = "execute", name = "Export full profile backup", order = 5,
-                        func = function() Blackacre.ExportProfileBackup() end,
+                        func = function() Blackacre.ExportProfileBackup("full") end,
+                    },
+                    exportTome = {
+                        type = "execute", name = "Export Tome backup", order = 5.1,
+                        desc = "Your journal and Quest Index only, as text to copy and keep.",
+                        func = function() Blackacre.ExportProfileBackup("tome") end,
+                    },
+                    exportBackstory = {
+                        type = "execute", name = "Export Backstory backup", order = 5.2,
+                        desc = "Your family tree, birthsign and birth details only, as text to copy and keep.",
+                        hidden = function() return not Blackacre.Backstory end,
+                        func = function() Blackacre.ExportProfileBackup("backstory") end,
                     },
                     restore = {
                         type = "execute", name = "Restore or import a backup...", order = 6,
                         func = function() Blackacre.Backup.ShowWindow() end,
                     },
                 },
+            },
+            helper = {
+                type = "group",
+                name = "Helper",
+                order = 4, -- near the top: it's the part new players need first
+                args = HelperArgs(),
             },
             credits = {
                 type = "group",
@@ -511,6 +572,11 @@ function Blackacre.Options.Init(addon)
     local options = BuildOptions()
     AceConfig:RegisterOptionsTable("Blackacre", options)
     AceConfigDialog:AddToBlizOptions("Blackacre", L("OPTIONS_TITLE"))
+
+    -- A little larger than Ace's 700x500, but never bigger than the screen allows.
+    local w = math.min(760, math.floor(UIParent:GetWidth() * 0.9))
+    local h = math.min(580, math.floor(UIParent:GetHeight() * 0.85))
+    AceConfigDialog:SetDefaultSize("Blackacre", math.max(w, 600), math.max(h, 420))
 
     -- /ba config
     if addon.RegisterChatCommand then

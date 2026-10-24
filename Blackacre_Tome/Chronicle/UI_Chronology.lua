@@ -2272,6 +2272,7 @@ local function MountToolsOnParentFooter()
     b:SetHeight(26)
     b:SetPoint("LEFT", 0, 0)
     b:SetText("Quest Index")
+    hub.questIndexBtn = b -- the tour spotlights it
     FitButtonWidth(b, 110)
     b:SetScript("OnClick", function()
         if Theme() and Theme().PlayUISound then Theme().PlayUISound("toolClick") end

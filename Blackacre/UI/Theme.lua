@@ -38,6 +38,19 @@ Blackacre.UI.Theme.Colors = {
     -- Tree nodes (family tree / Arc): passed-away grey, selection ring
     deceased = { 0.55, 0.55, 0.55 },
     highlight = { 1.00, 0.82, 0.00 },
+    -- Quest Index tooltip (owner, 2026-10-23): "Retired Quest" purple.
+    retiredQuest = { 0.64, 0.21, 0.93 },
+    -- Where borrowed quest text came from: warband blue, another player green.
+    textFromWarband = { 0.00, 0.80, 1.00 },
+    textFromPlayer = { 0.25, 0.78, 0.25 },
+    -- A family tree person's tooltip (owner, 2026-10-23): name gold, what
+    -- they are to me green, birth blue, Deceased red, Known/Rumored and
+    -- residence grey.
+    kinName = { 1.00, 0.82, 0.00 },
+    kinRelation = { 0.10, 1.00, 0.10 },
+    kinBorn = { 0.53, 0.67, 1.00 },
+    kinDeceased = { 1.00, 0.13, 0.13 },
+    kinDetail = { 0.62, 0.62, 0.62 },
 }
 
 Blackacre.UI.Theme.Seals = {
@@ -1703,6 +1716,95 @@ function Blackacre.UI.Theme.TrySetAtlas(tex, atlas, useAtlasSize)
         tex:SetAtlas(atlas, useAtlasSize and true or false)
     end)
     return ok
+end
+
+--- Tour art (owner-named, Pass B). The tour never holds a texture string itself.
+---   slot    Interface/HelpFrame/NewPlayerExperienceParts: green glow for small things
+---           (minimap button, tool buttons, survival icons). Blizzard draws it additive.
+---   card    Interface/Store/NewShop: for large bodies (Tool Box, Tome parts, editor fields).
+---   callout Interface/Glues/CharacterCreate/CharacterCreateTest: the text box.
+--- All sizes below are in the art's own pixels, measured from the BLP sheets in the
+--- Forever export. `scale` is how many screen units one art pixel is drawn as; the
+--- art is big, so it is drawn small. `w`/`h` are the atlas's size when measured.
+---   card: a clear-centred frame, ~7px border and a soft ~55px inner glow. `margin`
+---     is the corner size. noCenter keeps the target itself untinted.
+---   callout: 848x252, 36px soft glow round a 2px gold border, gradient inside, and
+---     a down-pointing arrow baked into the bottom edge. `cols`/`rows` are the grid
+---     lines of the nine pieces (the bottom row starts at the border line so the
+---     arrow isn't stretched with it). `arrow` is the strip cut out and drawn on its
+---     own, so it can sit on any edge and point at the target. borderY is the
+---     bottom border's row; `inset` is the glow width (border distance from the edge).
+Blackacre.UI.Theme.TourArt = {
+    -- outline: how far in from the atlas edge (as a fraction of its size) the white frame sits
+    -- (measured on the sheet: 36 of 152 px), so the tour can put that frame on the spotlight's edge.
+    slot = { atlas = "newplayertutorial-drag-slotgreen", blend = "ADD", outline = 0.238 },
+    card = { atlas = "card-large-new", margin = 64, scale = 0.22, noCenter = true },
+    callout = {
+        atlas = "charcreatetest-tutorialbox-class",
+        w = 848, h = 252, scale = 0.38, inset = 36,
+        cols = { 36, 44, 804, 812 }, -- starts at the border line: the art's own black shadow is left out
+        rows = { 36, 44, 183, 191 }, -- the middle stops above the arrow's arms (rows 184-188)
+        edgeX = { 100, 280 }, -- clear stretch of the bottom edge, left of the arrow
+        arrow = { x0 = 338, x1 = 508, y0 = 182, y1 = 252, borderY = 190, scale = 0.3 },
+    },
+}
+
+--- The glow Blizzard's own tutorial callouts wear: a gold halo with a bright core line,
+--- eight atlases (Interface/TutorialFrame/UIFrameTutorialGlow and ...GlowVertical).
+--- `d` is how far the core line sits inside the glow's outer edge, measured from the
+--- sheets (about 9px on every side), so the callout can line it up with its border.
+--- `scale` draws the glow larger than its art, which stretches the fade (raise it for a
+--- softer, wider halo; 1 is the art's own size).
+Blackacre.UI.Theme.TourGlow = {
+    d = 9,
+    scale = 1.6,
+    blend = "ADD", -- Blizzard draws this glow additively (TutorialFrame: backdropBorderBlendMode)
+    fade = 5,      -- art pixels at each piece's outer rim that fade to nothing (the art never does)
+    -- The top-right tile has its line ~1px further right than its mirror (bottom-right)
+    -- and the right edge; measured on screen at scale 1.6 it sat 1.4px out. Art pixels.
+    nudge = { TR = { x = -0.9, y = 0 } },
+    TL = "CalloutGlow-NineSlice-CornerTopLeft",
+    TR = "CalloutGlow-NineSlice-CornerTopRight",
+    BL = "CalloutGlow-NineSlice-CornerBottomLeft",
+    BR = "CalloutGlow-NineSlice-CornerBottomRight",
+    top = "_CalloutGlow-NineSlice-EdgeTop",
+    bottom = "_CalloutGlow-NineSlice-EdgeBottom",
+    left = "!CalloutGlow-NineSlice-EdgeLeft",
+    right = "!CalloutGlow-NineSlice-EdgeRight",
+}
+
+local GLOW_KEYS = { "TL", "TR", "BL", "BR", "top", "bottom", "left", "right" }
+
+--- The glow's atlases with their native size, file and texture coordinates:
+--- { d, scale, blend, fade, TL = { atlas, w, h, file, l, r, t, b }, ... }, or nil when
+--- this client is missing any of the eight.
+function Blackacre.UI.Theme.GetTourGlow()
+    local src = Blackacre.UI.Theme.TourGlow
+    local out = {
+        d = src.d * (src.scale or 1), scale = src.scale or 1,
+        blend = src.blend or "BLEND", fade = src.fade or 0, nudge = src.nudge or {},
+    }
+    for i = 1, #GLOW_KEYS do
+        local key = GLOW_KEYS[i]
+        local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(src[key])
+        local file = info and (info.filename or info.file)
+        if not file or (info.width or 0) <= 0 or (info.height or 0) <= 0 then return nil end
+        out[key] = {
+            atlas = src[key], w = info.width, h = info.height, file = file,
+            l = info.leftTexCoord or info.left or 0, r = info.rightTexCoord or info.right or 1,
+            t = info.topTexCoord or info.top or 0, b = info.bottomTexCoord or info.bottom or 1,
+        }
+    end
+    return out
+end
+
+--- Tour art for `kind` ("slot" / "card" / "callout"), or nil when this client lacks it.
+--- Returns the art row and its atlas info (file, texcoords, native size).
+function Blackacre.UI.Theme.GetTourArt(kind)
+    local art = Blackacre.UI.Theme.TourArt[kind]
+    local info = art and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(art.atlas)
+    if not info then return nil end
+    return art, info
 end
 
 --- Backdrop for a pannable tree viewport (B4F): the Mother talent tree art,

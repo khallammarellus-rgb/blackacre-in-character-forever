@@ -215,6 +215,14 @@ end
 ---   rec: a Quest Index record { title, giver, scene, dayText } where dayText
 ---        is like "the 27th of September".
 function Blackacre.Chronicle.Prompt.BuildQuestPage(rec)
+    -- Finished before the journal (imported): no day, place or weather was
+    -- kept, so the page says so rather than borrowing today's.
+    if rec.imported then
+        local giver = rec.giver and rec.giver ~= "" and rec.giver or nil
+        local done = giver and ("I had finished what " .. giver .. " asked of me")
+            or "I had seen a task through to its end"
+        return rec.title or "A task seen through", Voiced("Before I ever kept this journal, " .. done .. "...")
+    end
     local scene = rec.scene or Blackacre.Chronicle.Prompt.Snapshot()
     local place, parent = PlaceName(scene)
     local where = parent and (place .. ", " .. parent) or place

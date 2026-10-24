@@ -4,8 +4,8 @@ Blackacre = Blackacre or {}
 Blackacre.Chronicle = Blackacre.Chronicle or {}
 Blackacre.Chronicle.Store = {}
 
-local ipairs, pairs, type, time, table_insert, table_remove, table_sort =
-    ipairs, pairs, type, time, table.insert, table.remove, table.sort
+local ipairs, pairs, type, time, tonumber, table_insert, table_remove, table_sort =
+    ipairs, pairs, type, time, tonumber, table.insert, table.remove, table.sort
 
 -- Kinds older builds stored but never showed (survival and mount notes,
 -- automatic every-quest notes, hidden profession notes). Nothing writes
@@ -63,8 +63,68 @@ local function PurgeLegacyHidden(db)
     version = version + 1
 end
 
+-- One-time repair (2026-10-10, owner's choice "repair year and text"). An old
+-- calendar migration dated Forever pages and Quest Index records 42 ADP /
+-- 634 K.C. (a Retail year) instead of 25 ADP / 617 K.C.; see
+-- YearCalendar.EnsureIdentity. Stamps of exactly 42 become 25, and those
+-- pages' own words "42 ADP" / "634 K.C." are corrected to match. Sticky
+-- notes are the player's own words and are left alone. A backup holding the
+-- old data comes first: the login snapshot if one is being written (it was
+-- frozen before any package started), otherwise one made now. If no backup
+-- can be made nothing changes, and it tries again at the next login.
+local WRONG_ADP, RIGHT_ADP = 42, 25
+
+local function FixYearText(s)
+    if type(s) ~= "string" then return s end
+    s = s:gsub("%f[%d]634 K%.C%.", "617 K.C.")
+    s = s:gsub("%f[%d]42 ADP", "25 ADP")
+    return s
+end
+
+local function RepairWrongYear(db)
+    if db.yearRepaired then return end
+    local entries = db.entries
+    local cd = Blackacre.CharDB
+    local quests = type(cd) == "table" and type(cd.questLog) == "table" and cd.questLog.quests or nil
+    local needed = false
+    for i = 1, #entries do
+        if tonumber(entries[i].yearKC) == WRONG_ADP then needed = true break end
+    end
+    if not needed and type(quests) == "table" then
+        for _, q in pairs(quests) do
+            if type(q) == "table" and tonumber(q.yearADP) == WRONG_ADP then needed = true break end
+        end
+    end
+    if needed then
+        local backup = Blackacre.Backup
+        local safe = backup and ((backup.IsWriting and backup.IsWriting())
+            or (backup.SnapshotNow and backup.SnapshotNow("Before calendar repair")))
+        if not safe then return end
+        for i = 1, #entries do
+            local e = entries[i]
+            if tonumber(e.yearKC) == WRONG_ADP then
+                e.yearKC = RIGHT_ADP
+                if type(e.context) == "table" and tonumber(e.context.yearKC) == WRONG_ADP then
+                    e.context.yearKC = RIGHT_ADP
+                end
+                e.title = FixYearText(e.title)
+                e.body = FixYearText(e.body)
+            end
+        end
+        if type(quests) == "table" then
+            for _, q in pairs(quests) do
+                if type(q) == "table" and tonumber(q.yearADP) == WRONG_ADP then q.yearADP = RIGHT_ADP end
+            end
+        end
+        version = version + 1
+    end
+    db.yearRepaired = true
+end
+
 function Blackacre.Chronicle.Store.Init()
-    PurgeLegacyHidden(EnsureDB())
+    local db = EnsureDB()
+    PurgeLegacyHidden(db)
+    RepairWrongYear(db)
 end
 
 function Blackacre.Chronicle.Store.GetAll()

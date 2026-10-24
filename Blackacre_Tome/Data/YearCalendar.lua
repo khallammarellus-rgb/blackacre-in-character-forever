@@ -23,10 +23,18 @@ function Blackacre.YearCalendar.EnsureIdentity()
     if id.presentYearADP == nil then
         id.presentYearADP = Blackacre.YearCalendar.DEFAULT_PRESENT_ADP
     end
-    -- Migrate old yearKCBase flavor into presentYearADP once
-    if id.birthYearADP == nil and Blackacre.CharDB.settings and Blackacre.CharDB.settings.yearKCBase then
-        -- old default 42 was already portal-ish flavor
-        id.presentYearADP = Blackacre.CharDB.settings.yearKCBase or id.presentYearADP
+    -- Repair, once per character (2026-10-10). An old migration copied the
+    -- settings field yearKCBase (default 42, a Retail year from before the
+    -- split) into the present year on every call, and the Lineage editor
+    -- then saved whatever year it showed, so Forever characters were dated
+    -- 42 ADP / 634 K.C. instead of the Age of Adventure, 25 ADP / 617 K.C.
+    -- That migration is gone; 42 is never a Forever present year on purpose.
+    -- yearKCBase in Init.lua's defaults is now unused.
+    if not id.presentYearRepaired then
+        if tonumber(id.presentYearADP) == 42 then
+            id.presentYearADP = Blackacre.YearCalendar.DEFAULT_PRESENT_ADP
+        end
+        id.presentYearRepaired = true
     end
     return id
 end
