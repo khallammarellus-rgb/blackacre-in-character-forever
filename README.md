@@ -2,9 +2,38 @@
 
 This is the **WoW Forever** edition of [Blackacre: In Character](https://github.com/khallammarellus-rgb/blackacre-in-character) Designed to be a journal and RPG enhancing add on for WoW roleplay. This is the foundational base add on for planned extensions.
 
-**Version:** 2.0.0-dev
+**Version:** 2.5.0
 **Target:** WoW Forever
 **Repo:** https://github.com/khallammarellus-rgb/blackacre-in-character-forever · Retail sibling: https://github.com/khallammarellus-rgb/blackacre-in-character
+
+---
+
+## What's new in 2.5.0
+
+**Journal and Quest Index**
+- Quest Index tabs: **This character** and **Warband**. Warband quests are no longer imported into a character's list.
+- Search the Quest Index by quest name or by words in the quest; put a phrase in "quotes" for an exact match.
+- Abandoned quests stay in the Index, marked **Started**.
+- Imported quests can be journaled on request with **Journal Quest**.
+- Repeatable quests keep their first completion, numbered tracker quests are hidden unless **Numbered** is ticked, and retired quests show as **Retired Quest**.
+- Quest text is shared across your characters, and can be swapped with other In Character players (toggle in Settings).
+- Big quest imports run in smaller steps.
+
+**Calendar**
+- The present year is 25 ADP, as it should be on Forever (it was 42).
+- Pages and quests already dated 42 ADP / 634 K.C. are repaired.
+
+**Backups**
+- **Export Tome** backup, and importing a Tome backup now merges into your journal instead of replacing it.
+
+**Survival**
+- **Spirit Form** while dead: meters pause, and you come back hungry and thirsty.
+- Campfires warm you: **Campfire Nearby** and **Cozy Fire**.
+- Food and water tiers slow the drain, **Well Fed** holds hunger, cooked food refills it, and drinking fills thirst as you drink.
+
+**Tour and Settings**
+- **Helper** (`/ba helper`): a full guided tour or one per part, offered once on first login.
+- Settings sections are now a list on the left, in a roomier window.
 
 ---
 

@@ -2,7 +2,7 @@
 ## Interface-Camelot: 16001
 ## Title: In Character Forever
 ## Notes: Roleplay for WoW Forever: journal, survival, beacons and bulletins.
-## Version: 2.0.0-dev
+## Version: 2.5.0
 ## Author: khallammarellus-rgb
 ## X-License: MIT
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
