@@ -9,7 +9,7 @@ local C_Map, C_Timer = C_Map, C_Timer
 local AceAddon = LibStub("AceAddon-3.0")
 
 Blackacre = Blackacre or {}
-Blackacre.VERSION = "2.6.0"
+Blackacre.VERSION = "2.6.1"
 Blackacre.PREFIX = "BA_RP"
 Blackacre.CHANNEL_NAME = "Blackacre"
 Blackacre.SEP = "\031"
@@ -163,7 +163,7 @@ if not BlackacreDB._migratedFromIC and type(InCharacterDB) ~= "table" then
     BlackacreDB._migratedFromIC = true
 end
 
--- Ace mixins: events, comms, console, timer. AceBucket is not loaded (nothing registers a bucket).
+-- Ace mixins: events, comms, console, timer. AceBucket isn't bundled (nothing registers a bucket).
 local addon = AceAddon:NewAddon("Blackacre", "AceEvent-3.0", "AceComm-3.0", "AceConsole-3.0", "AceTimer-3.0")
 Blackacre.addon = addon
 

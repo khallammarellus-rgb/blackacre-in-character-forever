@@ -2,7 +2,7 @@
 ## Interface-Camelot: 16001
 ## Title: In Character Forever: |cffc9a227Survival|r
 ## Notes: Hunger, thirst, and exposure meters by zone climate (honor system)
-## Version: 2.6.0
+## Version: 2.6.1
 ## Author: khallammarellus-rgb
 ## RequiredDeps: Blackacre
 ## OptionalDeps: Blackacre_Tome

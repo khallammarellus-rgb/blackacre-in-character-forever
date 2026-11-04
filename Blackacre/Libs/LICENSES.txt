@@ -4,10 +4,9 @@ Third-party libraries bundled with In Character Forever
 These libraries are not covered by the add-on's MIT license. Each keeps its
 own license, reproduced or summarised below.
 
-Ace3 (AceAddon, AceBucket, AceComm, AceConfig, AceConsole, AceDB,
-AceDBOptions, AceEvent, AceGUI, AceLocale, AceSerializer, AceTimer),
-CallbackHandler-1.0 and LibDBIcon-1.0 (released under the same Ace3-style
-BSD license):
+Ace3 (AceAddon, AceComm, AceConfig, AceConsole, AceDB, AceEvent, AceGUI,
+AceLocale, AceSerializer, AceTimer), CallbackHandler-1.0 and LibDBIcon-1.0
+(released under the same Ace3-style BSD license):
 
     Copyright (c) 2007, Ace3 Development Team
 
