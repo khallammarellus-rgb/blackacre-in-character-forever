@@ -3,6 +3,7 @@
 /*
 !/.gitignore
 !/.pkgmeta
+!/.github/
 !/README.md
 !/LICENSE
 !/LICENSE.*

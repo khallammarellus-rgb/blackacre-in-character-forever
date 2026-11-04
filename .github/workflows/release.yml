@@ -1,0 +1,31 @@
+# Packages the add-on and uploads it to CurseForge (project 1722236, read from
+# X-Curse-Project-ID in Blackacre.toc) whenever a version tag such as v2.5.1 is
+# pushed. Needs the CF_API_KEY repository secret (a CurseForge API token).
+# Release notes are the tag's own message (git tag -a v2.5.1 -m "..."), so no
+# changelog file lives in the repo.
+name: Package and release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Release notes from the tag message
+        run: |
+          git fetch --tags --force
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.txt
+          cat RELEASE_NOTES.txt
+      - uses: BigWigsMods/packager@v2
