@@ -77,7 +77,7 @@ local function KnownChannelID()
     return nil
 end
 
-local function FilterBlackacreChat(_, _, msg, sender, language, _, _, _, _, _, channelName)
+local function FilterBlackacreChat(_, _, _, _, _, _, _, _, _, _, channelName)
     if ChannelNameMatch(channelName) then
         return true
     end
@@ -163,7 +163,7 @@ local function SendOnChannel(message, prio)
     return true
 end
 
-local function SendWhisper(target, message, _logged, prio)
+local function SendWhisper(target, message, prio)
     -- AceComm splits long payloads and sends them through ChatThrottleLib.
     -- There is no SendAddonMessageLogged on CTL; calling it errored every full bulletin.
     if not Blackacre.addon then return end
@@ -607,7 +607,7 @@ function Blackacre.Comms.SendBeaconHeartbeat(beacon, whisperTo)
         .. SEP .. (beacon.locKind or "present")
         .. SEP .. (beacon.ownerGUID or "")
     if whisperTo then
-        SendWhisper(whisperTo, msg, false, "NORMAL")
+        SendWhisper(whisperTo, msg, "NORMAL")
     else
         SendOnChannel(msg)
     end
@@ -703,7 +703,7 @@ local function OnBeaconHeartbeat(sender, fields)
     PruneCooldowns(now)
     if not askedCrumbsAt[id] or (now - askedCrumbsAt[id]) > BEACON_ASK_COOLDOWN then
         askedCrumbsAt[id] = now
-        SendWhisper(sender, "BF" .. SEP .. id .. SEP .. "rumor", false, "NORMAL")
+        SendWhisper(sender, "BF" .. SEP .. id .. SEP .. "rumor", "NORMAL")
     end
     TryMergeBeacon(id)
 end
@@ -775,17 +775,17 @@ function Blackacre.Comms.RequestTrail(beacon)
     local now = GetTime()
     if askedTrailAt[beacon.id] and (now - askedTrailAt[beacon.id]) < BEACON_ASK_COOLDOWN then return end
     askedTrailAt[beacon.id] = now
-    SendWhisper(beacon.senderName, "BF" .. SEP .. beacon.id .. SEP .. "trail", false, "NORMAL")
+    SendWhisper(beacon.senderName, "BF" .. SEP .. beacon.id .. SEP .. "trail", "NORMAL")
 end
 
 -- Seeker -> emitter: "I've had your Lead" / "I've found you" (anonymous on
 -- screen). The emitter's add-on turns it into a Blackacre whisper.
 function Blackacre.Comms.SendBeaconStage(emitter, id, stage)
-    SendWhisper(emitter, "BE" .. SEP .. id .. SEP .. stage, false, "NORMAL")
+    SendWhisper(emitter, "BE" .. SEP .. id .. SEP .. stage, "NORMAL")
 end
 
 function Blackacre.Comms.SendBeaconWatch(emitter, id, on)
-    SendWhisper(emitter, (on and "BW" or "BU") .. SEP .. id, false, "NORMAL")
+    SendWhisper(emitter, (on and "BW" or "BU") .. SEP .. id, "NORMAL")
 end
 
 local function PositionMessage(b)
@@ -825,7 +825,7 @@ SendPositionToWatchers = function(force)
         if untilAt < now then
             watchers[seeker] = nil
         else
-            SendWhisper(seeker, msg, false, "NORMAL")
+            SendWhisper(seeker, msg, "NORMAL")
         end
     end
 end
@@ -843,7 +843,7 @@ local function OnBeaconWatch(sender, id, on)
         if count >= MAX_WATCHERS then return end
     end
     watchers[sender] = GetTime() + WATCH_TTL
-    SendWhisper(sender, PositionMessage(b), false, "NORMAL")
+    SendWhisper(sender, PositionMessage(b), "NORMAL")
 end
 
 local function OnBeaconPosition(sender, fields)
@@ -955,13 +955,13 @@ local function FillFields(...)
     for i = n + 1, #fields do fields[i] = nil end
 end
 
-function Blackacre.Comms.OnCommReceived(prefix, message, distribution, sender)
+function Blackacre.Comms.OnCommReceived(prefix, message, _, sender)
     if prefix ~= PREFIX or not message or not sender then return end
     if IsMe(sender) then return end
     if C_FriendList and C_FriendList.IsIgnored and C_FriendList.IsIgnored(sender) then return end
 
     if message == "PING" then
-        SendWhisper(sender, "PONG", false)
+        SendWhisper(sender, "PONG")
         return
     end
     if message == "PONG" then
@@ -1046,12 +1046,12 @@ end
 --       BULK priority so it never crowds out anything else.
 ---------------------------------------------------------------------------
 function Blackacre.Comms.SendQuestWant(target, locale, ids)
-    SendWhisper(target, "QW" .. SEP .. locale .. SEP .. ids, false, "BULK")
+    SendWhisper(target, "QW" .. SEP .. locale .. SEP .. ids, "BULK")
 end
 
 function Blackacre.Comms.SendQuestText(target, payload)
     payload.opcode = "QT"
-    SendWhisper(target, EncodePayload(payload), false, "BULK")
+    SendWhisper(target, EncodePayload(payload), "BULK")
 end
 
 function Blackacre.Comms.SendSummaryTo(target)
@@ -1059,7 +1059,7 @@ function Blackacre.Comms.SendSummaryTo(target)
     if not Blackacre.Share or not Blackacre.Share.Export then return end
     local payload = Blackacre.Share.Export.BuildPeerPayload()
     local encoded = EncodePayload(payload)
-    SendWhisper(target, encoded, false, "NORMAL")
+    SendWhisper(target, encoded, "NORMAL")
 end
 
 function Blackacre.Comms.RequestSummary(target)
@@ -1067,6 +1067,6 @@ function Blackacre.Comms.RequestSummary(target)
         Blackacre.Print("Usage: /ic share PlayerName")
         return
     end
-    SendWhisper(target, "SQ", false, "NORMAL")
+    SendWhisper(target, "SQ", "NORMAL")
     Blackacre.Print("Requested Blackacre summary from " .. target .. ".")
 end

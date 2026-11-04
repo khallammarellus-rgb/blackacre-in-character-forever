@@ -3,7 +3,7 @@
 Blackacre = Blackacre or {}
 Blackacre.QuestText = {}
 
-local pairs, ipairs, type, tostring = pairs, ipairs, type, tostring
+local pairs, type, tostring = pairs, type, tostring
 local C_Timer, InCombatLockdown, GetLocale = C_Timer, InCombatLockdown, GetLocale
 local UnitName, UnitRace, UnitClass = UnitName, UnitRace, UnitClass
 local CreateFrame = CreateFrame

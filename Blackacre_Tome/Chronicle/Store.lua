@@ -31,12 +31,6 @@ function Blackacre.Chronicle.Store.Version()
     return version
 end
 
---- Every stored entry is a page now (legacy hidden records are purged on
---- load); kept as the one place the book asks.
-function Blackacre.Chronicle.Store.IsBookKind()
-    return true
-end
-
 local function EnsureDB()
     -- The active AceDB profile owns the feature data. BlackacreCharDB remains
     -- a compatibility mirror for older installs and the profile pointer.
@@ -175,8 +169,7 @@ function Blackacre.Chronicle.Store.StoryTimeAfter(entry)
     local nextAt
     for _, e in ipairs(EnsureDB().entries) do
         local t = StoryTime(e)
-        if e ~= entry and Blackacre.Chronicle.Store.IsBookKind(e.kind) and t > here
-            and (not nextAt or t < nextAt) then
+        if e ~= entry and t > here and (not nextAt or t < nextAt) then
             nextAt = t
         end
     end
@@ -193,8 +186,7 @@ function Blackacre.Chronicle.Store.StoryTimeBefore(entry)
     local prevAt
     for _, e in ipairs(EnsureDB().entries) do
         local t = StoryTime(e)
-        if e ~= entry and Blackacre.Chronicle.Store.IsBookKind(e.kind) and t < here
-            and (not prevAt or t > prevAt) then
+        if e ~= entry and t < here and (not prevAt or t > prevAt) then
             prevAt = t
         end
     end

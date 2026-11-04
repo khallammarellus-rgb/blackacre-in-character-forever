@@ -5,8 +5,8 @@ Blackacre.Chronicle = Blackacre.Chronicle or {}
 Blackacre.Chronicle.UI = {}
 Blackacre.Chronicle.Book = {}
 
-local type, ipairs, next, tostring, tonumber = type, ipairs, next, tostring, tonumber
-local time, wipe = time, wipe
+local ipairs, tostring, tonumber = ipairs, tostring, tonumber
+local wipe = wipe
 local GetTime, C_Timer = GetTime, C_Timer
 local IsControlKeyDown, IsShiftKeyDown = IsControlKeyDown, IsShiftKeyDown
 local CreateFrame, UIParent = CreateFrame, UIParent
@@ -136,24 +136,14 @@ local function EntryYearSection(entry)
     return tostring(adp), label, adp
 end
 
---- Kinds shown as pages (background records like survival stay hidden).
-local function IsAllowedChronicleKind(kind)
-    return Blackacre.Chronicle.Store.IsBookKind(kind)
-end
-
+-- Every stored entry is a page, so the Store's list is the book's list.
+-- Store.List already returns a fresh table; the options table is reused.
+local listOpts = {}
 local function GetEntryList()
-    local raw = Blackacre.Chronicle.Store.List({
-        kind = filterKind,
-        search = searchText,
-        oldestFirst = oldestFirst,
-    })
-    local list = {}
-    for i = 1, #raw do
-        if IsAllowedChronicleKind(raw[i].kind) then
-            list[#list + 1] = raw[i]
-        end
-    end
-    return list
+    listOpts.kind = filterKind
+    listOpts.search = searchText
+    listOpts.oldestFirst = oldestFirst
+    return Blackacre.Chronicle.Store.List(listOpts)
 end
 
 local function ByStoryOrder(a, b)
@@ -1659,7 +1649,7 @@ local function UndoStep(delta)
     RefocusEntry(entry)
 end
 
-PageEdit_OnKeyDown = function(self, key)
+PageEdit_OnKeyDown = function(_, key)
     if not IsControlKeyDown() then return end
     if key == "Z" then
         UndoStep(IsShiftKeyDown() and 1 or -1)
@@ -2445,9 +2435,6 @@ function Blackacre.Chronicle.UI.Show()
 end
 
 function Blackacre.Chronicle.UI.OnNewEntry(entry)
-    if entry and not IsAllowedChronicleKind(entry.kind) then
-        return
-    end
     if entry then
         JumpToEntrySpread(entry.id)
     elseif journal then

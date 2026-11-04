@@ -9,7 +9,7 @@ local C_Map, C_Timer = C_Map, C_Timer
 local AceAddon = LibStub("AceAddon-3.0")
 
 Blackacre = Blackacre or {}
-Blackacre.VERSION = "2.5.1"
+Blackacre.VERSION = "2.6.0"
 Blackacre.PREFIX = "BA_RP"
 Blackacre.CHANNEL_NAME = "Blackacre"
 Blackacre.SEP = "\031"
@@ -1166,22 +1166,22 @@ SlashCmdList["BLACKACRE"] = function(msg)
             NeedPackage(PKG_SURVIVAL, "Survival")
         end
     elseif msg == "afterlife" or msg == "death" or msg == "return" then
-        OpenBackstory("realms", "Afterlife")
+        OpenBackstory("realms")
     elseif msg == "realms" then
-        OpenBackstory("realms", "Afterlife")
+        OpenBackstory("realms")
         if Blackacre.Afterlife and Blackacre.Afterlife.UI and Blackacre.Afterlife.UI.ShowRealmPicker then
             Blackacre.Afterlife.UI.ShowRealmPicker()
         end
     elseif msg == "birth" or msg == "identity" or msg == "lineage" or msg == "age" or msg == "family" then
-        OpenBackstory("lineage", "Lineage")
+        OpenBackstory("lineage")
     elseif msg == "archetype" then
-        OpenBackstory("archetype", "Archetype")
+        OpenBackstory("archetype")
     elseif msg == "arc" then
-        OpenBackstory("arc", "Arc")
+        OpenBackstory("arc")
     elseif msg == "sheet" or msg == "character" then
-        OpenBackstory("share", "Character Sheet")
+        OpenBackstory("share")
     elseif msg == "backstory" then
-        OpenBackstory(nil, "Backstory")
+        OpenBackstory(nil)
     elseif msg == "export profile" then
         Blackacre.ExportProfileBackup("full")
     elseif msg == "export tome" then

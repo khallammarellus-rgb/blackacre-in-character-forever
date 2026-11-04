@@ -1124,15 +1124,6 @@ function Blackacre.UI.Theme.MountInPage(frame, parent)
     end
     -- Strip freestanding chrome if present
     if frame.closeButton then frame.closeButton:Hide() end
-    for _, child in ipairs({ frame:GetChildren() }) do
-        if child.GetObjectType and child:GetObjectType() == "Button" then
-            local n = child:GetName() or ""
-            if n:find("Close") or (child.GetNormalTexture and child:GetWidth() <= 32 and child:GetHeight() <= 32
-                and child:GetPoint(1) and select(1, child:GetPoint(1)) == "TOPRIGHT") then
-                -- leave generic small buttons; hide UIPanelCloseButton-like
-            end
-        end
-    end
 end
 
 function Blackacre.UI.Theme.InkFont(fontString, size)
@@ -1382,7 +1373,6 @@ function Blackacre.UI.Theme.ApplyRail(frame)
         local rightAtlas = Blackacre.UI.Theme.PickAtlas({ skin.tocTitleRight, skin.titleRight, skin.ninesliceCornerTR, skin.ninesliceCorner })
 
         local leftInfo = leftAtlas and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(leftAtlas)
-        local rightInfo = rightAtlas and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(rightAtlas)
 
         local capW = math.max(32, math.floor(h * 1.5))
         if leftInfo and leftInfo.width and leftInfo.height and leftInfo.height > 0 then

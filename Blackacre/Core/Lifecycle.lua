@@ -152,15 +152,18 @@ function Blackacre.Lifecycle.SendHeartbeat(force)
     end
 end
 
+-- Timer callbacks, made once (a ticker passes itself as the first argument,
+-- so it can't call SendHeartbeat directly).
+local function HeartbeatNow() Blackacre.Lifecycle.SendHeartbeat(true) end
+local function HeartbeatIfDue() Blackacre.Lifecycle.SendHeartbeat(false) end
+
 function Blackacre.Lifecycle.Init()
     Blackacre.Lifecycle.EnsurePresenceDB()
     DropSavedForeignBeacons()
     -- Emit never survives a logout. Draft and named saves do.
     Blackacre.CharDB.presence.emitEnabled = false
     C_Timer.NewTicker(60, Blackacre.Lifecycle.Sweep)
-    C_Timer.NewTicker(HEARTBEAT_EVERY, function()
-        Blackacre.Lifecycle.SendHeartbeat(true)
-    end)
+    C_Timer.NewTicker(HEARTBEAT_EVERY, HeartbeatNow)
     -- A roving beacon follows us into new areas; tell seekers when it moves.
     local moved = CreateFrame("Frame")
     moved:RegisterEvent("ZONE_CHANGED")
@@ -168,7 +171,7 @@ function Blackacre.Lifecycle.Init()
     moved:SetScript("OnEvent", function()
         local b = Blackacre.Lifecycle.GetActiveOwnedBeacon()
         if b and b.locKind == "roving" then
-            C_Timer.After(1, function() Blackacre.Lifecycle.SendHeartbeat(false) end)
+            C_Timer.After(1, HeartbeatIfDue)
         end
     end)
     -- Loading screens (portals, boats, dungeons, logout): seekers drop our
@@ -186,7 +189,7 @@ function Blackacre.Lifecycle.Init()
                 Blackacre.Comms.BroadcastRetract(p.activeBeaconId, "beacon")
             end
         else
-            C_Timer.After(5, function() Blackacre.Lifecycle.SendHeartbeat(true) end)
+            C_Timer.After(5, HeartbeatNow)
         end
     end)
 end
@@ -355,7 +358,7 @@ function Blackacre.Lifecycle.CreateBeacon(templateId, slotValues, opts)
     if not resolved then return nil end
     local ctx = Blackacre.GetZoneContext()
     local now = time()
-    local p = Blackacre.Lifecycle.EnsurePresenceDB()
+    Blackacre.Lifecycle.EnsurePresenceDB()
     local rumor = opts.rumor or ""
     local lead = opts.lead or ""
     local found = opts.found or ""

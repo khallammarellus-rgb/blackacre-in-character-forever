@@ -414,8 +414,7 @@ local function BuildOptions()
                         type = "description", order = 6, fontSize = "medium",
                         name = function()
                             local v = Voice()
-                            if not (v and v.Apply and v.Resolve) then return "" end
-                            local language, accent = v.Resolve()
+                            if not (v and v.Apply) then return "" end
                             return "\nSample: " .. v.Apply("I am looking for the thing near the mountain, yes?")
                                 .. "\nGreeting: " .. v.Apply("Hello, I am looking for the thing, yes?")
                                 .. "\nSlang: " .. v.Apply("I'm gonna look for the thing, yeah?") .. "\n"

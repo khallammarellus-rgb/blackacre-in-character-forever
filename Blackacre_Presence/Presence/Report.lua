@@ -3,7 +3,7 @@
 Blackacre = Blackacre or {}
 Blackacre.Report = {}
 
-local date, pairs, type = date, pairs, type
+local date, pairs = date, pairs
 local concat = table.concat
 
 local window
