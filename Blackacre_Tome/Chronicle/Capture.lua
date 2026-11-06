@@ -12,11 +12,14 @@ local titleReady = false
 local suppressToasts = false
 local repScanPending = false
 
+-- data.reaction is the standing index: 1 Hated, 2 Hostile, 3 Unfriendly,
+-- 4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted (YellowPages.lua
+-- uses the same scale). Only Friendly and up get a page.
 local STANDING_NAME = {
-    [4] = "Friendly",
-    [5] = "Honored",
-    [6] = "Revered",
-    [7] = "Exalted",
+    [5] = "Friendly",
+    [6] = "Honored",
+    [7] = "Revered",
+    [8] = "Exalted",
 }
 
 local function Toast(msg, kit)

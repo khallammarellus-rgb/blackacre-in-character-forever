@@ -115,10 +115,46 @@ local function RepairWrongYear(db)
     db.yearRepaired = true
 end
 
+-- One-time repair (2026-11-06, owner asked). Older builds named reputation
+-- standings one tier too high (the table in Capture.lua started at
+-- 4 = Friendly; the scale is 1 Hated .. 8 Exalted), so an Honored page read
+-- "Stormwind: Revered". Pages keep their standing number, so the name and
+-- title are rebuilt from it. A title is only changed if it is still exactly
+-- the one the add-on wrote; a title the player retyped is left alone.
+-- Nothing is deleted: a page that says Friendly but was really Neutral now
+-- says Neutral.
+local STANDING_NAME = {
+    [4] = "Neutral", [5] = "Friendly", [6] = "Honored", [7] = "Revered", [8] = "Exalted",
+}
+local WRONG_STANDING_NAME = {
+    [4] = "Friendly", [5] = "Honored", [6] = "Revered", [7] = "Exalted",
+}
+
+local function RepairStandingNames(db)
+    if db.standingRepaired then return end
+    local entries = db.entries
+    for i = 1, #entries do
+        local e = entries[i]
+        local facts = e.kind == "REPUTATION" and type(e.facts) == "table" and e.facts
+        local id = facts and tonumber(facts.standingId)
+        local wrong, right = WRONG_STANDING_NAME[id], STANDING_NAME[id]
+        if wrong and right and facts.standingName == wrong then
+            facts.standingName = right
+            local faction = facts.factionName or facts.name or "A people"
+            if e.title == faction .. ": " .. wrong then
+                e.title = faction .. ": " .. right
+            end
+        end
+    end
+    db.standingRepaired = true
+    version = version + 1
+end
+
 function Blackacre.Chronicle.Store.Init()
     local db = EnsureDB()
     PurgeLegacyHidden(db)
     RepairWrongYear(db)
+    RepairStandingNames(db)
 end
 
 function Blackacre.Chronicle.Store.GetAll()
