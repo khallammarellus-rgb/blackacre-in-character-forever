@@ -4,7 +4,7 @@ Blackacre = Blackacre or {}
 Blackacre.Backup = Blackacre.Backup or {}
 
 local pairs, ipairs, type, time, format, tostring, tinsert = pairs, ipairs, type, time, string.format, tostring, table.insert
-local C_Timer, date = C_Timer, date
+local C_Timer, date, GetTime = C_Timer, date, GetTime
 
 local AceSerializer = LibStub("AceSerializer-3.0")
 local LibDeflate = LibStub("LibDeflate")
@@ -19,6 +19,9 @@ local FIRST_DELAY = 10               -- let the world finish loading first
 local COMBAT_DELAY = 5
 local PAYLOAD_PREFIX = "BLACKACRE_PROFILE_V1:"
 local MAX_IMPORT_BYTES = 40 * 1024 * 1024
+local EXPORT_LINE_CHARS = 100        -- export text is broken into lines this long
+local PASTE_BOX_BYTES = 2500         -- the import box only ever holds this much
+local PASTE_MIN_BYTES = 64           -- shorter than this is typing, not a paste
 
 local box, window
 
@@ -541,8 +544,17 @@ end
 local function Encode(bundle, comment)
     local serialized = AceSerializer:Serialize(bundle)
     local payload = PAYLOAD_PREFIX .. LibDeflate:EncodeForPrint(LibDeflate:CompressDeflate(serialized, { level = CHUNK_LEVEL }))
-    -- The text is a valid Lua file, so it can be saved as one outside the game.
-    return "-- " .. comment .. "\nBlackacreProfileBackup = " .. format("%q", payload) .. "\n"
+    -- Broken into short lines: one long line with no spaces makes the game's text
+    -- box measure the whole thing over and over to wrap it, which froze the game
+    -- for half a minute on a 172 KB backup. Import ignores the line breaks.
+    local lines, n = {}, 0
+    for i = 1, #payload, EXPORT_LINE_CHARS do
+        n = n + 1
+        lines[n] = payload:sub(i, i + EXPORT_LINE_CHARS - 1)
+    end
+    -- The text is a valid Lua file, so it can be saved as one outside the game. The
+    -- payload's alphabet (letters, digits, brackets) never contains "]]".
+    return "-- " .. comment .. "\nBlackacreProfileBackup = [[\n" .. table.concat(lines, "\n", 1, n) .. "\n]]\n"
 end
 
 --- A Tome or Backstory backup: only that kind's parts of the character data. A Tome
@@ -598,34 +610,112 @@ function Blackacre.Backup.BuildExportText(kindKey)
     return Encode(bundle, "Blackacre full profile backup"), Count(profile.characterData)
 end
 
+-- Same shell as the Backups window below (bronze base, header strip, Quest Log
+-- panel): counts stacked at the top, the text in its own scroll panel, and a
+-- Copy String button in the footer. Add-ons can't write to the clipboard, so the
+-- button selects the whole text and the player presses Ctrl+C.
+local EXPORT_HEADER_H, EXPORT_FOOTER_H = 30, 30
+
 local function BuildBox()
+    local th = Blackacre.UI.Theme
     local f = CreateFrame("Frame", "BlackacreProfileExportFrame", UIParent, "BackdropTemplate")
-    f:SetSize(520, 340)
+    f:SetSize(520, 420)
     f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
-    Blackacre.UI.Theme.ApplyParchmentBackdrop(f, 0.98)
+    f:SetFrameStrata("HIGH")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetClampedToScreen(true)
+    f:Hide()
     tinsert(UISpecialFrames, "BlackacreProfileExportFrame")
     Blackacre.UI.Focus.Register(f)
-    local title = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalLarge")
-    title:SetPoint("TOP", 0, -12)
-    Blackacre.UI.Theme.GoldTitle(title)
-    f.title = title
-    f.hint = f:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlightSmall")
-    f.hint:SetPoint("TOPLEFT", 16, -36)
-    Blackacre.UI.Theme.InkFont(f.hint)
-    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", -2, -2)
-    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 16, -56)
-    scroll:SetPoint("BOTTOMRIGHT", -36, 16)
+    th.ApplyHeavyBronzeBase(f)
+
+    f.header = CreateFrame("Frame", nil, f)
+    f.header:SetPoint("TOPLEFT", 6, -6)
+    f.header:SetPoint("TOPRIGHT", -6, -6)
+    f.header:SetHeight(EXPORT_HEADER_H)
+    f.title = f.header:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontNormalLarge")
+    f.title:SetPoint("CENTER", 0, 9)
+    th.GoldTitle(f.title)
+    local close = CreateFrame("Button", nil, f.header, "UIPanelCloseButton")
+    close:SetSize(22, 22)
+    close:SetPoint("RIGHT", -2, 6)
+    close:SetScript("OnClick", function() f:Hide() end) -- parent is the header, not the window
+
+    f.footer = CreateFrame("Frame", nil, f)
+    f.footer:SetPoint("BOTTOMLEFT", 14, 14)
+    f.footer:SetPoint("BOTTOMRIGHT", -14, 14)
+    f.footer:SetHeight(EXPORT_FOOTER_H)
+    local inset = CreateFrame("Frame", nil, f)
+    inset:SetPoint("TOPLEFT", f.header, "BOTTOMLEFT", 8, -3)
+    inset:SetPoint("TOPRIGHT", f.header, "BOTTOMRIGHT", -8, -3)
+    inset:SetPoint("BOTTOMLEFT", f.footer, "TOPLEFT", 0, 6)
+    inset:SetPoint("BOTTOMRIGHT", f.footer, "TOPRIGHT", 0, 6)
+
+    -- Counts, one per line, then the instruction. Each line is held to the
+    -- window's width so nothing runs past the frame.
+    f.lines = {}
+    local prev
+    for i = 1, 3 do
+        local line = inset:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlight")
+        if prev then
+            line:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -2)
+            line:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -2)
+        else
+            line:SetPoint("TOPLEFT", 0, -2)
+            line:SetPoint("TOPRIGHT", 0, -2)
+        end
+        line:SetJustifyH("LEFT")
+        line:SetWordWrap(false)
+        f.lines[i] = line
+        prev = line
+    end
+    f.hint = inset:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlightSmall")
+    f.hint:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -8)
+    f.hint:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -8)
+    f.hint:SetJustifyH("LEFT")
+    f.hint:SetText("Copy string and save to a text, notepad, or markdown file.")
+
+    -- The text, in its own scroll panel (Quest Log panel, light text).
+    local page = CreateFrame("Frame", nil, inset)
+    page:SetPoint("TOPLEFT", f.hint, "BOTTOMLEFT", 0, -6)
+    page:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", 0, 0)
+    th.ApplyQuestLogListPanel(page)
+    local scroll = CreateFrame("ScrollFrame", nil, page, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 10, -10)
+    scroll:SetPoint("BOTTOMRIGHT", -30, 10)
     local edit = CreateFrame("EditBox", nil, scroll)
     edit:SetMultiLine(true)
     edit:SetFontObject(GameFontHighlightSmall)
-    edit:SetWidth(460)
-    edit:SetAutoFocus(true)
+    edit:SetTextColor(1, 1, 1, 1)
+    edit:SetAutoFocus(false)
+    edit:SetMaxLetters(0) -- backups are long
     edit:SetScript("OnEscapePressed", function() f:Hide() end)
+    -- Read-only: a stray key press puts the backup back as it was.
+    edit:SetScript("OnTextChanged", function(self, userInput)
+        if userInput and f.text then self:SetText(f.text); self:HighlightText() end
+    end)
     scroll:SetScrollChild(edit)
+    scroll:SetScript("OnSizeChanged", function(self, w) edit:SetWidth(w) end)
     f.edit = edit
+
+    -- Copy String (bottom left of the footer).
+    local copy = CreateFrame("Button", nil, f.footer, "UIPanelButtonTemplate")
+    copy:SetSize(120, 22)
+    copy:SetPoint("LEFT", 0, 0)
+    copy:SetText("Copy String")
+    f.copyNote = f.footer:CreateFontString(nil, "OVERLAY", "BlackacreFont_GameFontHighlightSmall")
+    f.copyNote:SetPoint("LEFT", copy, "RIGHT", 10, 0)
+    f.copyNote:SetPoint("RIGHT", 0, 0)
+    f.copyNote:SetJustifyH("LEFT")
+    copy:SetScript("OnClick", function()
+        edit:SetFocus()
+        edit:HighlightText()
+        f.copyNote:SetText("Selected. Now press Ctrl+C.")
+    end)
     return f
 end
 
@@ -635,21 +725,25 @@ function Blackacre.ExportProfileBackup(kindKey)
     local text, a, b = Blackacre.Backup.BuildExportText(kindKey)
     if not text then Blackacre.Print("Profile storage is not ready."); return end
     local kind = KINDS[kindKey]
-    local counts
-    if kindKey == "backstory" then
-        counts = format("%d people in the family tree", a or 0)
-    else
-        counts = format("%d pages, %d quests", a or 0, b or 0)
-    end
     box = box or BuildBox()
+    local size = format("%d KB", math.ceil(#text / 1024))
+    if kindKey == "backstory" then
+        local n = a or 0
+        box.lines[1]:SetText(format("%d %s", n, n == 1 and "Person" or "People"))
+        box.lines[2]:SetText(size)
+        box.lines[3]:SetText("")
+    else
+        local pages, quests = a or 0, b or 0
+        box.lines[1]:SetText(format("%d %s", pages, pages == 1 and "Page" or "Pages"))
+        box.lines[2]:SetText(format("%d %s", quests, quests == 1 and "Quest" or "Quests"))
+        box.lines[3]:SetText(size)
+    end
     box.title:SetText(kind.title)
-    box.hint:SetText(format("%s, %d KB. Select all, copy, and save it as a .lua file somewhere safe.",
-        counts, math.ceil(#text / 1024)))
+    box.copyNote:SetText("")
+    box.text = text
     box.edit:SetText(text)
-    box.edit:HighlightText()
     box:Show()
-    box.edit:SetFocus()
-    if Blackacre.UI and Blackacre.UI.Theme then Blackacre.UI.Theme.Toast(kind.title .. " ready to copy.") end
+    box.edit:SetCursorPosition(0)
 end
 
 ---------------------------------------------------------------------------
@@ -803,8 +897,35 @@ local function BuildWindow()
     edit:SetTextColor(1, 1, 1, 1)
     edit:SetWidth(520)
     edit:SetAutoFocus(false)
-    edit:SetMaxLetters(0) -- backups are long
     edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    -- Pasting a whole backup into a text box froze the game, because the box lays
+    -- out all of it. So the box is capped small, and the pasted letters are caught
+    -- one by one as they arrive (a paste delivers them all in the same frame, even
+    -- past the cap) and joined on the next frame. The box then shows a short note
+    -- instead of the backup. Same approach WeakAuras uses for its import box.
+    edit:SetMaxBytes(PASTE_BOX_BYTES)
+    local buffer, count, pasteAt = {}, 0, nil
+    local function Commit(self)
+        self:SetScript("OnUpdate", nil)
+        local text = table.concat(buffer, "", 1, count)
+        buffer, count = {}, 0
+        if #text < PASTE_MIN_BYTES then return end -- just typing
+        f.pasted = text
+        self:ClearFocus()
+        self:SetText(format("Backup text pasted (%d KB). Press Import.", math.ceil(#text / 1024)))
+    end
+    edit:SetScript("OnChar", function(self, c)
+        local now = GetTime()
+        if pasteAt ~= now then
+            pasteAt, count = now, 0
+            self:SetScript("OnUpdate", Commit)
+        end
+        count = count + 1
+        buffer[count] = c
+    end)
+    edit:SetScript("OnEditFocusGained", function(self)
+        if f.pasted then f.pasted = nil; self:SetText("") end -- ready for a new paste
+    end)
     scroll:SetScrollChild(edit)
     f.edit = edit
 
@@ -812,7 +933,7 @@ local function BuildWindow()
     importBtn:SetSize(100, 22)
     importBtn:SetPoint("RIGHT", 0, 0)
     importBtn:SetText("Import")
-    importBtn:SetScript("OnClick", function() Blackacre.Backup.ImportText(edit:GetText()) end)
+    importBtn:SetScript("OnClick", function() Blackacre.Backup.ImportText(f.pasted or edit:GetText()) end)
     return f
 end
 

@@ -2,7 +2,7 @@
 ## Interface-Camelot: 16001
 ## Title: In Character Forever: |cffc9a227Journal|r
 ## Notes: Your first-person journal, Quest Index, voice, honor rules and battle reports.
-## Version: 2.6.1
+## Version: 2.6.2
 ## Author: khallammarellus-rgb
 ## RequiredDeps: Blackacre
 ## Category-enUS: Roleplay

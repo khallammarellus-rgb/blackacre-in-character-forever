@@ -9,7 +9,7 @@ local C_Map, C_Timer = C_Map, C_Timer
 local AceAddon = LibStub("AceAddon-3.0")
 
 Blackacre = Blackacre or {}
-Blackacre.VERSION = "2.6.1"
+Blackacre.VERSION = "2.6.2"
 Blackacre.PREFIX = "BA_RP"
 Blackacre.CHANNEL_NAME = "Blackacre"
 Blackacre.SEP = "\031"
